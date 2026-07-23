@@ -45,8 +45,8 @@ export function Admin() {
       const d = await api.get<{ problems: Problem[] }>('/api/admin/problems')
       setProblems(d.problems)
       setTimeout(() => setSyncMsg(''), 3000)
-    } catch (err: any) {
-      setSyncMsg('동기화 실패: ' + err.message)
+    } catch (err) {
+      setSyncMsg('동기화 실패: ' + (err instanceof Error ? err.message : String(err)))
     } finally {
       setBusy(false)
     }

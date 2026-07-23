@@ -17,6 +17,7 @@ export function Layout({ children }: { children?: React.ReactNode }) {
     return (
       <Link
         to={to}
+        aria-current={active ? 'page' : undefined}
         className={`flex items-center gap-1.5 px-3 py-1.5 text-sm transition-colors border-b-2 -mb-px ${
           active
             ? 'text-ink border-accent'
