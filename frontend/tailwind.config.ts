@@ -1,50 +1,56 @@
 import type { Config } from 'tailwindcss'
 
+// Every color is a CSS variable so the whole UI re-themes by swapping the
+// variable set in index.css (:root = light, html.theme-dark = dark). Components
+// keep using semantic tokens (bg-canvas, text-ink, border-edge, bg-accent/30 …)
+// and never hardcode a palette value. Channel-only vars use the <alpha-value>
+// placeholder so Tailwind opacity modifiers keep working.
+const ch = (name: string) => `rgb(var(${name}) / <alpha-value>)`
+const raw = (name: string) => `var(${name})`
+
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
-        // deep ops-console canvas, layered surfaces
-        canvas: '#0a0e14',
+        canvas: ch('--canvas'),
         surface: {
-          DEFAULT: '#0f141c',
-          2: '#151b26',
-          3: '#1c2432',
+          DEFAULT: ch('--surface'),
+          2: ch('--surface-2'),
+          3: ch('--surface-3'),
         },
         edge: {
-          DEFAULT: '#26334a',
-          soft: '#1a2334',
+          DEFAULT: ch('--edge'),
+          soft: ch('--edge-soft'),
         },
         ink: {
-          DEFAULT: '#e6edf6',
-          muted: '#8b98ab',
-          faint: '#5a6a82',
+          DEFAULT: ch('--ink'),
+          muted: ch('--ink-muted'),
+          faint: ch('--ink-faint'),
         },
-        // Kubernetes brand blue — deliberate, not default tailwind blue
         accent: {
-          DEFAULT: '#326ce5',
-          hover: '#4d84f0',
-          soft: 'rgba(50, 108, 229, 0.14)',
-          dim: 'rgba(50, 108, 229, 0.07)',
+          DEFAULT: ch('--accent'),
+          hover: ch('--accent-hover'),
+          soft: raw('--accent-soft'),
+          dim: raw('--accent-dim'),
         },
         success: {
-          DEFAULT: '#2dd4a7',
-          soft: 'rgba(45, 212, 167, 0.12)',
+          DEFAULT: ch('--success'),
+          soft: raw('--success-soft'),
         },
         warning: {
-          DEFAULT: '#f5b83d',
-          soft: 'rgba(245, 184, 61, 0.12)',
+          DEFAULT: ch('--warning'),
+          soft: raw('--warning-soft'),
         },
         danger: {
-          DEFAULT: '#f4586b',
-          soft: 'rgba(244, 88, 107, 0.12)',
+          DEFAULT: ch('--danger'),
+          soft: raw('--danger-soft'),
         },
         info: {
-          DEFAULT: '#38bdf8',
-          soft: 'rgba(56, 189, 248, 0.12)',
+          DEFAULT: ch('--info'),
+          soft: raw('--info-soft'),
         },
-        terminal: '#05080d',
+        terminal: ch('--terminal'),
       },
       fontFamily: {
         display: ['"Chakra Petch"', '"IBM Plex Sans"', 'sans-serif'],
@@ -56,18 +62,12 @@ export default {
           '0%': { opacity: '0', transform: 'translateY(14px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
         },
-        'blink': {
-          '0%, 100%': { opacity: '1' },
-          '50%': { opacity: '0' },
-        },
+        'blink': { '0%, 100%': { opacity: '1' }, '50%': { opacity: '0' } },
         'pulse-dot': {
           '0%, 100%': { opacity: '1', transform: 'scale(1)' },
           '50%': { opacity: '0.5', transform: 'scale(0.8)' },
         },
-        'scan': {
-          '0%': { transform: 'translateY(-100%)' },
-          '100%': { transform: 'translateY(100%)' },
-        },
+        'scan': { '0%': { transform: 'translateY(-100%)' }, '100%': { transform: 'translateY(100%)' } },
       },
       animation: {
         'fade-up': 'fade-up 0.5s ease-out both',

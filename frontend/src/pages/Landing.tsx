@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { TerminalReplay, SectionLabel, SevTag, TypeTag, categoryMeta } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
+import { ThemeToggle } from '../components/ThemeToggle'
 import {
   ArrowRight, ServerCog, Stethoscope, Wrench, BadgeCheck,
   BookOpen, Trophy, ChevronRight,
@@ -109,6 +110,7 @@ export function Landing() {
             </Link>
           </nav>
           <div className="flex items-center gap-3">
+            <ThemeToggle className="hidden sm:inline-flex" />
             {user ? (
               <Link to="/" className="btn-primary text-sm py-2">콘솔로 이동 <ArrowRight className="w-4 h-4" aria-hidden="true" /></Link>
             ) : (

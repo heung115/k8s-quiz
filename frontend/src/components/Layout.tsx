@@ -1,6 +1,7 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
 import { BookOpen, Shield, LogOut, Trophy, ListChecks } from 'lucide-react'
+import { ThemeToggle } from './ThemeToggle'
 
 export function Layout({ children }: { children?: React.ReactNode }) {
   const { user, logout } = useAuthStore()
@@ -57,6 +58,7 @@ export function Layout({ children }: { children?: React.ReactNode }) {
               )}
               <span className="hidden sm:inline font-mono text-xs">{user?.username}</span>
             </Link>
+            <ThemeToggle />
             <button
               onClick={handleLogout}
               className="text-ink-faint hover:text-danger transition-colors p-1.5"
