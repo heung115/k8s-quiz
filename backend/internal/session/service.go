@@ -63,6 +63,7 @@ type Service struct {
 	scripts      ScriptProvider
 	sessions     map[string]*Session
 	mu           sync.RWMutex
+	userMu       sync.Map // userID -> *sync.Mutex, serializes start/reset/end per user
 	onStage      StageCallback
 	onTimeout    func(userID string)
 	onTimeoutWarn func(userID string, remainingSeconds int)
@@ -113,12 +114,15 @@ func (s *Service) SetPool(p *container.Pool) {
 }
 
 func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (string, error) {
+	ul := s.userLock(userID)
+	ul.Lock()
+	defer ul.Unlock()
+
 	s.mu.Lock()
-	if _, ok := s.sessions[userID]; ok {
-		s.mu.Unlock()
-		s.EndSession(context.Background(), userID)
-	} else {
-		s.mu.Unlock()
+	existing := s.sessions[userID]
+	s.mu.Unlock()
+	if existing != nil {
+		s.endSessionLocked(context.Background(), userID)
 	}
 
 	p, err := s.problemStore.FindByID(ctx, problemID)
@@ -264,12 +268,17 @@ func (s *Service) Verify(ctx context.Context, userID string) (bool, string, erro
 	var success bool
 	var verifyLog string
 
+	// Bound the verification exec so a hanging verify.sh (or text grader)
+	// cannot tie up the handler indefinitely (DoS guard).
+	vctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
 	if p.VerifyType == "script" {
 		script, err := s.scripts.GetVerifyScript(p.ID)
 		if err != nil {
 			return false, "", fmt.Errorf("verify script not found")
 		}
-		result, err := s.containerMgr.Exec(ctx, sess.ContainerID, []string{"/bin/sh", "-c", script})
+		result, err := s.containerMgr.Exec(vctx, sess.ContainerID, []string{"/bin/sh", "-c", script})
 		if err != nil {
 			return false, "", fmt.Errorf("verify exec failed: %w", err)
 		}
@@ -279,7 +288,7 @@ func (s *Service) Verify(ctx context.Context, userID string) (bool, string, erro
 		if s.grader == nil {
 			return false, "", fmt.Errorf("text grading is not configured")
 		}
-		evidence, err := s.collectEvidence(ctx, sess.ContainerID)
+		evidence, err := s.collectEvidence(vctx, sess.ContainerID)
 		if err != nil {
 			return false, "", fmt.Errorf("collect evidence: %w", err)
 		}
@@ -351,6 +360,10 @@ func (s *Service) SubmitChoice(ctx context.Context, userID, choiceID string) (bo
 }
 
 func (s *Service) ResetEnvironment(ctx context.Context, userID string) error {
+	ul := s.userLock(userID)
+	ul.Lock()
+	defer ul.Unlock()
+
 	sess := s.GetSession(userID)
 	if sess == nil {
 		return fmt.Errorf("no active session")
@@ -395,7 +408,20 @@ func (s *Service) ResetEnvironment(ctx context.Context, userID string) error {
 	return nil
 }
 
+func (s *Service) userLock(userID string) *sync.Mutex {
+	v, _ := s.userMu.LoadOrStore(userID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 func (s *Service) EndSession(ctx context.Context, userID string) {
+	ul := s.userLock(userID)
+	ul.Lock()
+	defer ul.Unlock()
+	s.endSessionLocked(ctx, userID)
+}
+
+// endSessionLocked tears down a session; the caller must hold the per-user lock.
+func (s *Service) endSessionLocked(ctx context.Context, userID string) {
 	s.mu.Lock()
 	sess, ok := s.sessions[userID]
 	if ok {

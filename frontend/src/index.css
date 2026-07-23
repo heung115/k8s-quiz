@@ -71,3 +71,10 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---- landing reveal-on-scroll + marquee (extracted from inline style for CSP) ---- */
+.reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s ease, transform .6s ease; }
+.reveal.is-in { opacity: 1; transform: none; }
+@keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.marquee-track { animation: marquee 36s linear infinite; }
+.marquee-track:hover { animation-play-state: paused; }

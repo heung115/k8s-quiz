@@ -90,13 +90,6 @@ export function Landing() {
 
   return (
     <div className="min-h-screen bg-canvas bg-grid">
-      <style>{`
-        .reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s ease, transform .6s ease; }
-        .reveal.is-in { opacity: 1; transform: none; }
-        @keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-        .marquee-track { animation: marquee 36s linear infinite; }
-        .marquee-track:hover { animation-play-state: paused; }
-      `}</style>
 
       {/* ---------- nav ---------- */}
       <header className={`fixed top-0 inset-x-0 z-50 transition-all duration-200 ${scrolled ? 'bg-canvas/90 backdrop-blur border-b border-edge-soft' : 'bg-transparent'}`}>

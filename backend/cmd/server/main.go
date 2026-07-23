@@ -26,6 +26,10 @@ import (
 func main() {
 	cfg := config.Load()
 
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("insecure configuration: %v", err)
+	}
+
 	db, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
@@ -129,7 +133,7 @@ func main() {
 			return ""
 		}
 		return sess.ContainerID
-	})
+	}, cfg.FrontendURL)
 	r.GET("/ws/terminal", terminalHandler.HandleWebSocket)
 
 	r.GET("/health", func(c *gin.Context) {

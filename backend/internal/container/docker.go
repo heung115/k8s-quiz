@@ -76,14 +76,21 @@ func (m *DockerManager) Create(ctx context.Context, opts CreateOpts) (string, er
 		Cmd:    []string{"server"},
 	}
 
+	// NOTE on isolation: sessions run as privileged k3s containers because
+	// kubelet requires it. A privileged container on a shared host is a
+	// container-escape risk, so production SHOULD run each session in an
+	// isolated VM / gVisor / dedicated node instead of on the backend host.
+	// The limits below (CPU, memory, pids) at least contain resource abuse.
+	pids := int64(1024)
 	hostCfg := &container.HostConfig{
 		Privileged: opts.Privileged,
 		// k3s kubelet needs to enter the host cgroup namespace on cgroup v2
 		// hosts (e.g. Docker Desktop); without this the node never becomes Ready.
 		CgroupnsMode: container.CgroupnsModeHost,
 		Resources: container.Resources{
-			NanoCPUs: opts.CPULimit,
-			Memory:   opts.MemoryLimit,
+			NanoCPUs:  opts.CPULimit,
+			Memory:    opts.MemoryLimit,
+			PidsLimit: &pids,
 		},
 	}
 

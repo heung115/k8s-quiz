@@ -11,7 +11,7 @@ interface AuthState {
   loadFromStorage: () => void
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   accessToken: null,
   refreshToken: null,
@@ -26,6 +26,15 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ user })
   },
   logout: () => {
+    const rt = get().refreshToken
+    if (rt) {
+      // best-effort server-side revocation; clear local state regardless
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: rt }),
+      }).catch(() => {})
+    }
     localStorage.removeItem('access_token')
     localStorage.removeItem('refresh_token')
     localStorage.removeItem('user')

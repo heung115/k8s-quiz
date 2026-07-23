@@ -2,11 +2,25 @@ package problem
 
 import (
 	"context"
+	"log"
 	"net/http"
+	"regexp"
 
 	"github.com/gin-gonic/gin"
 	"github.com/k8s-quiz/backend/pkg/middleware"
 	"github.com/k8s-quiz/backend/pkg/models"
+)
+
+// validProblemID matches the directory/URL-safe ids we accept. This blocks
+// path-traversal payloads ("../", slashes) at the API boundary as well as in
+// the loader.
+var validProblemID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`).MatchString
+
+var (
+	validCategory   = map[string]bool{"pod": true, "network": true, "storage": true, "rbac": true, "scheduling": true, "config": true}
+	validDifficulty = map[string]bool{"easy": true, "medium": true, "hard": true}
+	validType       = map[string]bool{"fix": true, "find": true, "deploy": true}
+	validVerify     = map[string]bool{"script": true, "choice": true, "text": true}
 )
 
 type SessionService interface {
@@ -81,7 +95,8 @@ func (h *Handler) Start(c *gin.Context) {
 	u := middleware.GetUser(c)
 	sessionID, err := h.sessionSvc.StartProblem(c.Request.Context(), u.ID, c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("start problem %s for %s failed: %v", c.Param("id"), u.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start environment"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"session_id": sessionID})
@@ -90,7 +105,8 @@ func (h *Handler) Start(c *gin.Context) {
 func (h *Handler) Reset(c *gin.Context) {
 	u := middleware.GetUser(c)
 	if err := h.sessionSvc.ResetEnvironment(c.Request.Context(), u.ID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("reset for %s failed: %v", u.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reset environment"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "environment reset initiated"})
@@ -98,12 +114,13 @@ func (h *Handler) Reset(c *gin.Context) {
 
 func (h *Handler) Verify(c *gin.Context) {
 	u := middleware.GetUser(c)
-	success, log, err := h.sessionSvc.Verify(c.Request.Context(), u.ID)
+	success, verifyLog, err := h.sessionSvc.Verify(c.Request.Context(), u.ID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		log.Printf("verify for %s failed: %v", u.ID, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "verification failed"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": success, "log": log})
+	c.JSON(http.StatusOK, gin.H{"success": success, "log": verifyLog})
 }
 
 func (h *Handler) SubmitChoice(c *gin.Context) {
@@ -117,7 +134,7 @@ func (h *Handler) SubmitChoice(c *gin.Context) {
 	}
 	success, err := h.sessionSvc.SubmitChoice(c.Request.Context(), u.ID, req.ChoiceID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "submission failed"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": success})
@@ -135,6 +152,27 @@ func (h *Handler) AdminList(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"problems": problems})
 }
 
+// validateProblem enforces the id format and enum fields so a stored problem
+// can never carry a path-traversal id or unexpected values.
+func validateProblem(p *models.Problem) string {
+	if !validProblemID(p.ID) {
+		return "invalid problem id (use lowercase letters, digits, hyphen)"
+	}
+	if p.Category != "" && !validCategory[p.Category] {
+		return "invalid category"
+	}
+	if p.Difficulty != "" && !validDifficulty[p.Difficulty] {
+		return "invalid difficulty"
+	}
+	if p.Type != "" && !validType[p.Type] {
+		return "invalid type"
+	}
+	if p.VerifyType != "" && !validVerify[p.VerifyType] {
+		return "invalid verify_type"
+	}
+	return ""
+}
+
 func (h *Handler) Create(c *gin.Context) {
 	var p models.Problem
 	if err := c.ShouldBindJSON(&p); err != nil {
@@ -145,10 +183,15 @@ func (h *Handler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id required"})
 		return
 	}
+	if msg := validateProblem(&p); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
 	if p.TimeoutMinutes == 0 {
 		p.TimeoutMinutes = 30
 	}
 	if err := h.repo.Upsert(c.Request.Context(), &p); err != nil {
+		log.Printf("admin create problem %s failed: %v", p.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create problem"})
 		return
 	}
@@ -162,7 +205,12 @@ func (h *Handler) Update(c *gin.Context) {
 		return
 	}
 	p.ID = c.Param("id")
+	if msg := validateProblem(&p); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
 	if err := h.repo.Upsert(c.Request.Context(), &p); err != nil {
+		log.Printf("admin update problem %s failed: %v", p.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update problem"})
 		return
 	}
@@ -171,6 +219,7 @@ func (h *Handler) Update(c *gin.Context) {
 
 func (h *Handler) Delete(c *gin.Context) {
 	if err := h.repo.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		log.Printf("admin delete problem %s failed: %v", c.Param("id"), err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete problem"})
 		return
 	}
@@ -180,7 +229,8 @@ func (h *Handler) Delete(c *gin.Context) {
 func (h *Handler) Sync(c *gin.Context) {
 	problems, err := h.loader.LoadAll(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load problems: " + err.Error()})
+		log.Printf("admin sync failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load problems"})
 		return
 	}
 	count := 0

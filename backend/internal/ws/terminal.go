@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,36 +16,61 @@ import (
 	"github.com/k8s-quiz/backend/pkg/middleware"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
+const maxWSMessage = 64 * 1024 // bound inbound frame size (memory-DoS guard)
 
 type TerminalHandler struct {
-	hub          *Hub
-	validator    middleware.TokenValidator
-	containerMgr container.Manager
-	getSession   func(userID string) string
+	hub           *Hub
+	validator     middleware.TokenValidator
+	containerMgr  container.Manager
+	getSession    func(userID string) string
+	allowedOrigin *url.URL
+	upgrader      websocket.Upgrader
 }
 
-func NewTerminalHandler(hub *Hub, validator middleware.TokenValidator, containerMgr container.Manager, getSession func(string) string) *TerminalHandler {
-	return &TerminalHandler{
+func NewTerminalHandler(hub *Hub, validator middleware.TokenValidator, containerMgr container.Manager, getSession func(string) string, frontendURL string) *TerminalHandler {
+	h := &TerminalHandler{
 		hub:          hub,
 		validator:    validator,
 		containerMgr: containerMgr,
 		getSession:   getSession,
 	}
+	if u, err := url.Parse(frontendURL); err == nil {
+		h.allowedOrigin = u
+	}
+	h.upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     h.checkOrigin,
+	}
+	return h
+}
+
+// checkOrigin rejects cross-origin WebSocket upgrades (CSRF / abuse guard).
+// An empty Origin (non-browser clients) is permitted; otherwise the origin
+// must match the configured frontend.
+func (h *TerminalHandler) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	if h.allowedOrigin == nil {
+		return false
+	}
+	o, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(o.Scheme, h.allowedOrigin.Scheme) &&
+		strings.EqualFold(o.Host, h.allowedOrigin.Host)
 }
 
 func (h *TerminalHandler) HandleWebSocket(c *gin.Context) {
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("websocket upgrade error: %v", err)
 		return
 	}
+	conn.SetReadLimit(maxWSMessage)
 
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	_, msgData, err := conn.ReadMessage()
@@ -68,6 +95,12 @@ func (h *TerminalHandler) HandleWebSocket(c *gin.Context) {
 
 	userID := u.ID
 	conn.SetReadDeadline(time.Time{})
+	// Keep the connection alive: each pong resets the read deadline so a
+	// silently-dead client is reaped instead of leaking a goroutine.
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return nil
+	})
 
 	containerID := h.getSession(userID)
 	if containerID == "" {
@@ -95,7 +128,8 @@ func (h *TerminalHandler) readPump(client *Client, containerID string) {
 
 	execConn, err := h.containerMgr.ExecInteractive(context.Background(), containerID, []string{"/bin/sh"})
 	if err != nil {
-		client.WriteJSON(Message{Type: MsgError, Message: "failed to start terminal: " + err.Error()})
+		client.WriteJSON(Message{Type: MsgError, Message: "failed to start terminal"})
+		log.Printf("terminal exec for %s failed: %v", client.UserID, err)
 		return
 	}
 	defer execConn.Close()

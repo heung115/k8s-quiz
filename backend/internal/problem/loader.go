@@ -18,10 +18,23 @@ type Loader interface {
 
 type GitLoader struct {
 	repoPath string
+	clean    string
 }
 
 func NewGitLoader(repoPath string) *GitLoader {
-	return &GitLoader{repoPath: repoPath}
+	return &GitLoader{repoPath: repoPath, clean: filepath.Clean(repoPath)}
+}
+
+// safeJoin resolves repoPath/problemID/file and guarantees the result stays
+// inside repoPath, defeating path-traversal via a crafted problemID (e.g.
+// "../../etc"). Without this, GetSetupScript could read & execute an
+// arbitrary host file.
+func (l *GitLoader) safeJoin(problemID, file string) (string, error) {
+	full := filepath.Clean(filepath.Join(l.repoPath, problemID, file))
+	if full != l.clean && !strings.HasPrefix(full, l.clean+string(os.PathSeparator)) {
+		return "", fmt.Errorf("problem path escapes repo root")
+	}
+	return full, nil
 }
 
 func (l *GitLoader) LoadAll(ctx context.Context) ([]models.Problem, error) {
@@ -33,6 +46,11 @@ func (l *GitLoader) LoadAll(ctx context.Context) ([]models.Problem, error) {
 	var problems []models.Problem
 	for _, entry := range entries {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		// Directory names become problem ids; reject anything that could
+		// escape the root or break URLs/paths.
+		if !validProblemID(entry.Name()) {
 			continue
 		}
 		problemDir := filepath.Join(l.repoPath, entry.Name())
@@ -71,9 +89,10 @@ func (l *GitLoader) LoadAll(ctx context.Context) ([]models.Problem, error) {
 			p.BaseImage = "k3s-base:latest"
 		}
 
-		hintPath := filepath.Join(problemDir, "hint.md")
-		if hintData, err := os.ReadFile(hintPath); err == nil {
-			p.Hint = string(hintData)
+		if hintPath, err := l.safeJoin(entry.Name(), "hint.md"); err == nil {
+			if hintData, err := os.ReadFile(hintPath); err == nil {
+				p.Hint = string(hintData)
+			}
 		}
 
 		problems = append(problems, p)
@@ -83,23 +102,36 @@ func (l *GitLoader) LoadAll(ctx context.Context) ([]models.Problem, error) {
 }
 
 func (l *GitLoader) GetProblemDir(problemID string) string {
-	return filepath.Join(l.repoPath, problemID)
+	p, err := l.safeJoin(problemID, "")
+	if err != nil {
+		return ""
+	}
+	return p
 }
 
 func (l *GitLoader) HasSetupScript(problemID string) bool {
-	path := filepath.Join(l.repoPath, problemID, "setup.sh")
-	_, err := os.Stat(path)
+	path, err := l.safeJoin(problemID, "setup.sh")
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
 	return err == nil
 }
 
 func (l *GitLoader) HasVerifyScript(problemID string) bool {
-	path := filepath.Join(l.repoPath, problemID, "verify.sh")
-	_, err := os.Stat(path)
+	path, err := l.safeJoin(problemID, "verify.sh")
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
 	return err == nil
 }
 
 func (l *GitLoader) GetSetupScript(problemID string) (string, error) {
-	path := filepath.Join(l.repoPath, problemID, "setup.sh")
+	path, err := l.safeJoin(problemID, "setup.sh")
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -108,7 +140,10 @@ func (l *GitLoader) GetSetupScript(problemID string) (string, error) {
 }
 
 func (l *GitLoader) GetVerifyScript(problemID string) (string, error) {
-	path := filepath.Join(l.repoPath, problemID, "verify.sh")
+	path, err := l.safeJoin(problemID, "verify.sh")
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err

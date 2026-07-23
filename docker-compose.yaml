@@ -10,8 +10,8 @@ services:
       - DATABASE_URL=postgres://k8squiz:k8squiz@db:5432/k8squiz?sslmode=disable
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
-      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
       - PROBLEMS_REPO_PATH=/problems
       - FRONTEND_URL=http://localhost:5173
       - DOCKER_HOST=unix:///var/run/docker.sock

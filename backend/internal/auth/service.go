@@ -148,6 +148,15 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 	return accessToken, newRefresh, nil
 }
 
+// RevokeRefresh deletes a refresh token by its raw value so it can no longer
+// be exchanged (server-side logout). A missing/unknown token is not an error.
+func (s *Service) RevokeRefresh(ctx context.Context, refreshToken string) {
+	if refreshToken == "" {
+		return
+	}
+	s.db.Exec(ctx, `DELETE FROM refresh_tokens WHERE token_hash = $1`, hashToken(refreshToken))
+}
+
 func (s *Service) ValidateAccessToken(tokenString string) (*models.User, error) {
 	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
