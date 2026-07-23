@@ -1,11 +1,18 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { Problem, User, Attempt } from '../types'
-import { RefreshCw, Trash2 } from 'lucide-react'
+import { SectionLabel, SevTag, TypeTag } from '../components/ui'
+import { RefreshCw, Trash2, ShieldCheck } from 'lucide-react'
 
 type Tab = 'problems' | 'users' | 'attempts'
 
-const attemptStatusColor: Record<string, string> = {
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'problems', label: 'PROBLEMS' },
+  { key: 'users', label: 'USERS' },
+  { key: 'attempts', label: 'ATTEMPTS' },
+]
+
+const statusCls: Record<string, string> = {
   success: 'text-success',
   failed: 'text-danger',
   in_progress: 'text-warning',
@@ -18,44 +25,38 @@ export function Admin() {
   const [users, setUsers] = useState<User[]>([])
   const [attempts, setAttempts] = useState<Attempt[]>([])
   const [syncMsg, setSyncMsg] = useState('')
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    loadData()
+    if (tab === 'problems') {
+      api.get<{ problems: Problem[] }>('/api/admin/problems').then((d) => setProblems(d.problems)).catch(console.error)
+    } else if (tab === 'users') {
+      api.get<{ users: User[] }>('/api/admin/users').then((d) => setUsers(d.users)).catch(console.error)
+    } else {
+      api.get<{ attempts: Attempt[] }>('/api/admin/attempts').then((d) => setAttempts(d.attempts)).catch(console.error)
+    }
   }, [tab])
 
-  const loadData = async () => {
-    try {
-      if (tab === 'problems') {
-        const data = await api.get<{ problems: Problem[] }>('/api/admin/problems')
-        setProblems(data.problems)
-      } else if (tab === 'users') {
-        const data = await api.get<{ users: User[] }>('/api/admin/users')
-        setUsers(data.users)
-      } else {
-        const data = await api.get<{ attempts: Attempt[] }>('/api/admin/attempts')
-        setAttempts(data.attempts)
-      }
-    } catch (err) {
-      console.error(err)
-    }
-  }
-
   const handleSync = async () => {
+    setBusy(true)
     try {
       const data = await api.post<{ synced: number }>('/api/admin/problems/sync')
-      setSyncMsg(`${data.synced} problems synced`)
-      loadData()
+      setSyncMsg(`${data.synced}건 동기화 완료`)
+      const d = await api.get<{ problems: Problem[] }>('/api/admin/problems')
+      setProblems(d.problems)
       setTimeout(() => setSyncMsg(''), 3000)
     } catch (err: any) {
-      setSyncMsg('Sync failed: ' + err.message)
+      setSyncMsg('동기화 실패: ' + err.message)
+    } finally {
+      setBusy(false)
     }
   }
 
   const handleDeleteProblem = async (id: string) => {
-    if (!confirm(`Delete problem "${id}"?`)) return
+    if (!confirm(`"${id}" 문제를 삭제할까요?`)) return
     try {
       await api.delete(`/api/admin/problems/${id}`)
-      loadData()
+      setProblems((prev) => prev.filter((p) => p.id !== id))
     } catch (err) {
       console.error(err)
     }
@@ -64,81 +65,98 @@ export function Admin() {
   const handleChangeRole = async (userId: string, role: string) => {
     try {
       await api.put(`/api/admin/users/${userId}/role`, { role })
-      loadData()
+      setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, role: role as User['role'] } : u)))
     } catch (err) {
       console.error(err)
     }
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold mb-6">Admin</h1>
-
-      <div className="flex gap-2 mb-6">
-        {(['problems', 'users', 'attempts'] as Tab[]).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              tab === t ? 'bg-accent text-ink' : 'bg-surface-2 text-ink-muted hover:text-ink'
-            }`}
-          >
-            {t}
-          </button>
-        ))}
+    <div className="max-w-6xl mx-auto px-5 py-10">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <SectionLabel>CONTROL PLANE</SectionLabel>
+          <h1 className="mt-3 font-display font-bold text-3xl tracking-tight flex items-center gap-3">
+            <ShieldCheck className="w-7 h-7 text-accent-hover" aria-hidden="true" /> 관리
+          </h1>
+        </div>
         {tab === 'problems' && (
-          <button
-            onClick={handleSync}
-            className="ml-auto flex items-center gap-1.5 px-4 py-2 bg-success-soft text-success border border-success/30 hover:bg-success/20 rounded-lg text-sm font-medium transition-colors"
-          >
-            <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-            Sync Problems
+          <button onClick={handleSync} disabled={busy} className="btn-ghost text-sm py-2">
+            <RefreshCw className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} aria-hidden="true" />
+            {busy ? '동기화 중…' : 'Git 저장소 동기화'}
           </button>
         )}
       </div>
 
-      {syncMsg && <p className="mb-4 text-sm text-success">{syncMsg}</p>}
+      {syncMsg && <p className="mt-4 micro text-success">{syncMsg}</p>}
 
+      {/* tabs */}
+      <div className="mt-8 flex gap-1 border-b border-edge" role="tablist" aria-label="관리 섹션">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            role="tab"
+            aria-selected={tab === t.key}
+            onClick={() => setTab(t.key)}
+            className={`px-4 py-2.5 micro border-b-2 -mb-px transition-colors ${
+              tab === t.key ? 'border-accent text-accent-hover' : 'border-transparent text-ink-faint hover:text-ink-muted'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* problems */}
       {tab === 'problems' && (
-        <div className="space-y-2">
+        <div className="mt-6 border border-edge bg-surface divide-y divide-edge-soft">
+          {problems.length === 0 && (
+            <p className="p-8 text-center text-ink-faint text-sm">문제가 없습니다. "Git 저장소 동기화"를 실행하세요.</p>
+          )}
           {problems.map((p) => (
-            <div key={p.id} className="flex items-center justify-between bg-surface border border-edge rounded-lg px-4 py-3">
-              <div>
-                <span className="font-medium">{p.title}</span>
-                <span className="ml-3 text-xs text-ink-faint font-mono">{p.id}</span>
+            <div key={p.id} className="flex items-center gap-4 px-4 py-3.5 hover:bg-surface-2 transition-colors">
+              <div className="min-w-0 flex-1">
+                <p className="font-medium truncate">{p.title}</p>
+                <p className="font-mono text-xs text-ink-faint mt-0.5">{p.id} · {p.verify_type} · {p.timeout_minutes}min</p>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-ink-faint">{p.category} / {p.difficulty}</span>
-                <button
-                  onClick={() => handleDeleteProblem(p.id)}
-                  className="flex items-center gap-1 text-xs text-danger hover:opacity-80"
-                >
-                  <Trash2 className="w-3 h-3" aria-hidden="true" />
-                  Delete
-                </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <SevTag difficulty={p.difficulty} />
+                <TypeTag type={p.type} />
+                <span className="micro text-ink-faint hidden sm:inline">{p.category}</span>
               </div>
+              <button
+                onClick={() => handleDeleteProblem(p.id)}
+                className="p-2 text-ink-faint hover:text-danger transition-colors shrink-0"
+                aria-label={`${p.id} 삭제`}
+              >
+                <Trash2 className="w-4 h-4" aria-hidden="true" />
+              </button>
             </div>
           ))}
-          {problems.length === 0 && <p className="text-ink-faint">No problems. Click "Sync Problems" to load from repo.</p>}
         </div>
       )}
 
+      {/* users */}
       {tab === 'users' && (
-        <div className="space-y-2">
+        <div className="mt-6 border border-edge bg-surface divide-y divide-edge-soft">
           {users.map((u) => (
-            <div key={u.id} className="flex items-center justify-between bg-surface border border-edge rounded-lg px-4 py-3">
-              <div className="flex items-center gap-3">
-                {u.avatar_url && <img src={u.avatar_url} alt="" className="w-8 h-8 rounded-full" />}
-                <div>
-                  <span className="font-medium">{u.username}</span>
-                  <span className="ml-2 text-xs text-ink-faint">{u.email}</span>
-                </div>
+            <div key={u.id} className="flex items-center gap-4 px-4 py-3.5">
+              {u.avatar_url ? (
+                <img src={u.avatar_url} alt="" className="w-8 h-8 rounded-full border border-edge" />
+              ) : (
+                <span className="w-8 h-8 rounded-full border border-edge bg-surface-2 flex items-center justify-center micro text-ink-faint">
+                  {u.username[0]?.toUpperCase()}
+                </span>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="font-medium truncate">{u.username}</p>
+                <p className="font-mono text-xs text-ink-faint truncate">{u.email || u.id.slice(0, 8)}</p>
               </div>
               <select
                 value={u.role}
                 onChange={(e) => handleChangeRole(u.id, e.target.value)}
-                className="bg-surface-2 border border-edge rounded px-2 py-1 text-xs"
-                aria-label={`Role for ${u.username}`}
+                className="bg-surface-2 border border-edge px-2 py-1.5 font-mono text-xs focus:border-accent/60 focus:outline-none"
+                aria-label={`${u.username} 권한`}
               >
                 <option value="user">user</option>
                 <option value="admin">admin</option>
@@ -148,23 +166,21 @@ export function Admin() {
         </div>
       )}
 
+      {/* attempts */}
       {tab === 'attempts' && (
-        <div className="space-y-2">
+        <div className="mt-6 border border-edge bg-surface divide-y divide-edge-soft">
+          {attempts.length === 0 && <p className="p-8 text-center text-ink-faint text-sm">아직 시도 기록이 없습니다.</p>}
           {attempts.map((a) => (
-            <div key={a.id} className="flex items-center justify-between bg-surface border border-edge rounded-lg px-4 py-3">
-              <div>
-                <span className="font-medium">{a.problem_id}</span>
-                <span className="ml-3 text-xs text-ink-faint">user: {a.user_id.slice(0, 8)}</span>
-              </div>
-              <div className="text-sm text-ink-faint">
-                <span className={attemptStatusColor[a.status] || 'text-ink-muted'}>
-                  {a.status}
-                </span>
-                {a.duration_seconds && <span className="ml-2">{a.duration_seconds}s</span>}
-              </div>
+            <div key={a.id} className="flex items-center gap-4 px-4 py-3.5">
+              <span className="font-mono text-sm font-medium">{a.problem_id}</span>
+              <span className={`micro ${statusCls[a.status] || 'text-ink-muted'}`}>{a.status.toUpperCase()}</span>
+              <span className="ml-auto font-mono text-xs text-ink-faint">
+                user {a.user_id.slice(0, 8)}
+                {a.duration_seconds != null && ` · ${a.duration_seconds}s`}
+                <span className="hidden sm:inline"> · {new Date(a.started_at).toLocaleString()}</span>
+              </span>
             </div>
           ))}
-          {attempts.length === 0 && <p className="text-ink-faint">No attempts yet.</p>}
         </div>
       )}
     </div>

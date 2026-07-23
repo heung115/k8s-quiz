@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 cat <<'YAML' | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolumeClaim

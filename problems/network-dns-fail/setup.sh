@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 cat <<'YAML' | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment

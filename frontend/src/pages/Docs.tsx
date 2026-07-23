@@ -1,101 +1,87 @@
+import { SectionLabel } from '../components/ui'
+
+function Code({ children }: { children: React.ReactNode }) {
+  return <code className="font-mono text-[12.5px] bg-surface-2 border border-edge-soft px-1.5 py-0.5 text-info">{children}</code>
+}
+
+function Block({ children }: { children: React.ReactNode }) {
+  return (
+    <pre className="font-mono text-xs bg-terminal border border-edge p-4 overflow-x-auto leading-relaxed text-ink-muted">{children}</pre>
+  )
+}
+
+function Item({ n, title, children }: { n: string; title: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-4">
+      <span className="font-display font-bold text-edge text-2xl select-none shrink-0 w-10">{n}</span>
+      <div className="pb-8 border-l border-edge-soft pl-5 -ml-5">
+        <h3 className="font-display font-semibold text-lg">{title}</h3>
+        <div className="mt-2 text-sm text-ink-muted leading-relaxed space-y-2">{children}</div>
+      </div>
+    </div>
+  )
+}
+
 export function Docs() {
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8 prose prose-invert prose-sm">
-      <h1 className="text-2xl font-bold mb-6">문서</h1>
+    <div className="max-w-3xl mx-auto px-5 py-10">
+      <SectionLabel>DOCUMENTATION</SectionLabel>
+      <h1 className="mt-3 font-display font-bold text-3xl tracking-tight">문서</h1>
+      <p className="mt-2 text-sm text-ink-muted">처음이라면 사용자 가이드부터, 문제를 내고 싶다면 제작 가이드를 보세요.</p>
 
-      <section className="mb-10">
-        <h2 className="text-xl font-semibold mb-4 text-accent-hover">사용자 가이드</h2>
-        <div className="space-y-4 text-ink">
-          <div>
-            <h3 className="font-medium text-ink mb-1">1. 문제 선택</h3>
-            <p>대시보드에서 카테고리(Pod, Network, Storage, RBAC, Scheduling, Config)와 난이도(easy, medium, hard)로 필터링하여 문제를 선택합니다.</p>
-          </div>
-          <div>
-            <h3 className="font-medium text-ink mb-1">2. 문제 풀이</h3>
-            <p>"문제 시작" 버튼을 클릭하면 k3s 환경이 컨테이너로 생성됩니다. 환경 준비가 완료되면 웹 터미널에서 <code className="bg-surface-2 px-1 rounded">kubectl</code> 등의 명령어로 문제를 해결합니다.</p>
-          </div>
-          <div>
-            <h3 className="font-medium text-ink mb-1">3. 검증</h3>
-            <p>
-              <strong>Fix it 문제:</strong> "확인" 버튼을 눌러 검증 스크립트로 자동 판정합니다.<br/>
-              <strong>Find it 문제:</strong> 원인을 선택지에서 골라 제출합니다.
-            </p>
-          </div>
-          <div>
-            <h3 className="font-medium text-ink mb-1">4. 리셋 & 종료</h3>
-            <p>환경이 망가졌으면 "리셋" 버튼으로 초기화할 수 있습니다. 타임아웃은 유지됩니다. "종료" 버튼으로 세션을 끝냅니다.</p>
-          </div>
-          <div>
-            <h3 className="font-medium text-ink mb-1">5. 타임아웃</h3>
-            <p>문제마다 제한 시간이 있으며(기본 30분), 5분 전부터 경고 메시지가 표시됩니다.</p>
-          </div>
-        </div>
+      {/* ---- user guide ---- */}
+      <section className="mt-12">
+        <SectionLabel className="mb-6">USER GUIDE</SectionLabel>
+        <Item n="01" title="시나리오 선택">
+          <p>콘솔에서 카테고리(Pod · Network · Storage · RBAC · Scheduling · Config)와 난이도(SEV-3=easy, SEV-2=medium, SEV-1=hard)로 좁혀서 시나리오를 고릅니다. 검색도 됩니다.</p>
+        </Item>
+        <Item n="02" title="환경 시작">
+          <p><strong className="text-ink">환경 시작</strong>을 누르면 격리된 k3s 클러스터가 컨테이너로 뜹니다. 부팅 → 시나리오 주입(setup.sh) → 대기 단계를 타임라인으로 보여줍니다. 준비되면 웹 터미널에서 <Code>kubectl</Code>을 쓸 수 있습니다.</p>
+        </Item>
+        <Item n="03" title="진단과 수정">
+          <p>터미널은 실제 컨테이너의 셸입니다. <Code>kubectl get pods</Code>, <Code>kubectl describe</Code>, <Code>kubectl logs</Code> 등으로 증상을 추적하고 원인을 직접 고칩니다.</p>
+        </Item>
+        <Item n="04" title="검증">
+          <p><strong className="text-ink">FIX 시나리오</strong>는 <strong className="text-ink">검증</strong> 버튼이 verify.sh를 실행해 판정합니다. 로그까지 함께 표시됩니다.<br />
+          <strong className="text-ink">FIND 시나리오</strong>는 원인을 선택지에서 골라 제출합니다.</p>
+        </Item>
+        <Item n="05" title="리셋 · 종료 · 타임아웃">
+          <p>환경이 더 망가졌으면 <strong className="text-ink">리셋</strong>으로 초기 상태부터 다시 시작할 수 있습니다(제한 시간은 유지). <strong className="text-ink">종료</strong>는 세션을 끝내고 컨테이너를 즉시 정리합니다. 제한 시간 5분 전부터 경고가 표시됩니다.</p>
+        </Item>
       </section>
 
-      <section>
-        <h2 className="text-xl font-semibold mb-4 text-success">문제 출제 가이드</h2>
-        <div className="space-y-4 text-ink">
+      {/* ---- authoring guide ---- */}
+      <section className="mt-8">
+        <SectionLabel className="mb-6">PROBLEM AUTHORING GUIDE</SectionLabel>
+        <div className="text-sm text-ink-muted leading-relaxed space-y-4">
+          <p>문제는 <Code>problems/&lt;id&gt;/</Code> 디렉터리 아래 4개 파일로 구성됩니다.</p>
+          <Block>{`problems/my-problem/
+  problem.yaml   # 메타데이터
+  setup.sh       # 고장난 상태를 만드는 스크립트
+  verify.sh      # 해결 여부를 판정 (exit 0 = 성공)
+  hint.md        # 선택 힌트`}</Block>
           <div>
-            <h3 className="font-medium text-ink mb-1">문제 구조</h3>
-            <p>문제 리포지토리에 디렉토리를 생성하고 아래 파일들을 추가합니다:</p>
-            <pre className="bg-surface border border-edge rounded-lg p-4 text-xs overflow-x-auto">
-{`problems/
-  my-problem/
-    problem.yaml    # 필수: 메타데이터
-    setup.sh        # 필수: 고장난 환경 구성
-    verify.sh       # 필수 (script type): 검증 스크립트
-    hint.md         # 선택: 힌트`}
-            </pre>
-          </div>
-          <div>
-            <h3 className="font-medium text-ink mb-1">problem.yaml</h3>
-            <pre className="bg-surface border border-edge rounded-lg p-4 text-xs overflow-x-auto">
-{`id: my-problem
+            <p className="font-display font-semibold text-ink mb-2">problem.yaml 예시</p>
+            <Block>{`id: my-problem
 title: "문제 제목"
 description: |
-  문제 설명을 작성합니다.
-category: pod          # pod|network|storage|rbac|scheduling|config
-difficulty: easy       # easy|medium|hard
-type: fix              # fix|find
+  상황 설명…
+category: pod            # pod|network|storage|rbac|scheduling|config
+difficulty: easy         # easy|medium|hard
+type: fix                # fix|find|deploy
 timeout_minutes: 30
-verify_type: script    # script|choice
-base_image: k3s-base:latest
-# choices:             # choice type일 때
-#   - id: a
-#     text: "선택지 A"
-# correct_choice: a`}
-            </pre>
+verify_type: script      # script|choice
+base_image: k3s-base:latest`}</Block>
           </div>
           <div>
-            <h3 className="font-medium text-ink mb-1">setup.sh</h3>
-            <p>k3s가 부팅된 후 실행됩니다. 고장난 상태를 만듭니다.</p>
-            <pre className="bg-surface border border-edge rounded-lg p-4 text-xs overflow-x-auto">
-{`#!/bin/sh
-# 예: Pod을 CrashLoopBackOff 상태로 만들기
-kubectl create deployment broken-app --image=nginx
-kubectl set env deployment/broken-app INVALID_ENV=crash`}
-            </pre>
+            <p className="font-display font-semibold text-ink mb-2">검증 스크립트 원칙</p>
+            <ul className="list-none space-y-1.5">
+              <li><span className="text-success font-mono">✓</span> exit 0 = 해결, exit 1 = 미해결. 메시지는 사용자에게 그대로 표시됩니다.</li>
+              <li><span className="text-success font-mono">✓</span> 상태가 실제로 원하는 조건을 만족하는지 확인하세요 (예: Pod가 Running이면서 Ready).</li>
+              <li><span className="text-danger font-mono">✗</span> "파일이 존재한다"처럼 우회 가능한 판정은 금물 — 거짓 통과(false-pass)가 납니다.</li>
+            </ul>
           </div>
-          <div>
-            <h3 className="font-medium text-ink mb-1">verify.sh</h3>
-            <p>exit code 0이면 성공, 그 외는 실패입니다.</p>
-            <pre className="bg-surface border border-edge rounded-lg p-4 text-xs overflow-x-auto">
-{`#!/bin/sh
-# 예: Pod이 Running인지 확인
-STATUS=$(kubectl get pods -l app=broken-app -o jsonpath='{.items[0].status.phase}')
-if [ "$STATUS" = "Running" ]; then
-  echo "Pod is running!"
-  exit 0
-else
-  echo "Pod is not running: $STATUS"
-  exit 1
-fi`}
-            </pre>
-          </div>
-          <div>
-            <h3 className="font-medium text-ink mb-1">등록</h3>
-            <p>문제 리포에 push 후, Admin 페이지에서 "Sync Problems" 버튼을 클릭하면 DB에 반영됩니다.</p>
-          </div>
+          <p>작성 후 관리자 페이지의 <strong className="text-ink">동기화</strong>를 누르면 Git 저장소에서 다시 읽어 반영됩니다.</p>
         </div>
       </section>
     </div>
