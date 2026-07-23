@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/k8s-quiz/backend/pkg/middleware"
@@ -24,14 +25,28 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	auth.GET("/github", h.GithubLogin)
 	auth.GET("/github/callback", h.GithubCallback)
 	auth.POST("/refresh", h.Refresh)
+	auth.POST("/logout", h.Logout)
+	auth.DELETE("/logout", h.Logout)
 	auth.GET("/me", middleware.Auth(h.service), h.Me)
+}
+
+// cookieSecure is true when the frontend is served over https, so the
+// oauth_state cookie gets the Secure flag in production.
+func (h *Handler) cookieSecure() bool {
+	return strings.HasPrefix(h.service.cfg.FrontendURL, "https://")
+}
+
+func (h *Handler) setStateCookie(c *gin.Context, value string, maxAge int) {
+	// SameSite=Lax blocks the state cookie from being sent on cross-site
+	// POSTs (CSRF); Secure is set when the frontend is https.
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("oauth_state", value, maxAge, "/", "", h.cookieSecure(), true)
 }
 
 func (h *Handler) GithubLogin(c *gin.Context) {
 	state := generateState()
-	c.SetCookie("oauth_state", state, 300, "/", "", false, true)
-	url := h.service.GetAuthURL(state)
-	c.Redirect(http.StatusTemporaryRedirect, url)
+	h.setStateCookie(c, state, 300)
+	c.Redirect(http.StatusTemporaryRedirect, h.service.GetAuthURL(state))
 }
 
 func (h *Handler) GithubCallback(c *gin.Context) {
@@ -39,7 +54,7 @@ func (h *Handler) GithubCallback(c *gin.Context) {
 
 	state := c.Query("state")
 	cookieState, err := c.Cookie("oauth_state")
-	if err != nil || state != cookieState {
+	if err != nil || state == "" || state != cookieState {
 		c.Redirect(http.StatusTemporaryRedirect, frontend+"/login?error=invalid_state")
 		return
 	}
@@ -56,7 +71,7 @@ func (h *Handler) GithubCallback(c *gin.Context) {
 		return
 	}
 
-	c.SetCookie("oauth_state", "", -1, "/", "", false, true)
+	h.setStateCookie(c, "", -1)
 
 	userJSON, err := json.Marshal(u)
 	if err != nil {
@@ -67,10 +82,13 @@ func (h *Handler) GithubCallback(c *gin.Context) {
 	q := url.Values{}
 	q.Set("access_token", accessToken)
 	q.Set("refresh_token", refreshToken)
-	// Frontend Login reads params.get("user") then decodeURIComponent(), so the
-	// value must be URI-encoded JSON (QueryEscape here, Encode() escapes again).
 	q.Set("user", url.QueryEscape(string(userJSON)))
-	c.Redirect(http.StatusTemporaryRedirect, frontend+"/login?"+q.Encode())
+
+	// Tokens go in the URL FRAGMENT, not the query string. The fragment is
+	// never sent to the server, so it does not land in nginx/proxy access
+	// logs, and it is not leaked via the Referer header. The SPA reads it
+	// from location.hash. (Long-term: migrate to httpOnly cookies.)
+	c.Redirect(http.StatusTemporaryRedirect, frontend+"/login#"+q.Encode())
 }
 
 func (h *Handler) Refresh(c *gin.Context) {
@@ -92,6 +110,17 @@ func (h *Handler) Refresh(c *gin.Context) {
 		"access_token":  accessToken,
 		"refresh_token": refreshToken,
 	})
+}
+
+// Logout revokes the caller's refresh token server-side so it cannot be
+// reused after the client clears its local storage.
+func (h *Handler) Logout(c *gin.Context) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	h.service.RevokeRefresh(c.Request.Context(), req.RefreshToken)
+	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) Me(c *gin.Context) {

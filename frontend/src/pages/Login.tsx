@@ -24,13 +24,18 @@ export function Login() {
   const { setAuth, user } = useAuthStore()
 
   useEffect(() => {
-    const accessToken = params.get('access_token')
-    const refreshToken = params.get('refresh_token')
-    const userStr = params.get('user')
+    // Tokens arrive in the URL fragment (location.hash) so they never touch
+    // server logs or the Referer header. Fall back to query for legacy links.
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    const accessToken = hash.get('access_token') || params.get('access_token')
+    const refreshToken = hash.get('refresh_token') || params.get('refresh_token')
+    const userStr = hash.get('user') || params.get('user')
     if (accessToken && userStr) {
       try {
         const userData = JSON.parse(decodeURIComponent(userStr))
         setAuth(userData, accessToken, refreshToken || '')
+        // strip the fragment so tokens don't linger in the address bar
+        window.history.replaceState(null, '', '/login')
         navigate('/')
       } catch { /* fall through */ }
     }
@@ -40,7 +45,7 @@ export function Login() {
     if (user) navigate('/')
   }, [user])
 
-  const error = params.get('error')
+  const error = params.get('error') || new URLSearchParams(window.location.hash.replace(/^#/, '')).get('error')
 
   return (
     <div className="min-h-screen bg-canvas bg-grid flex items-center justify-center px-5">
@@ -78,7 +83,7 @@ export function Login() {
 
             <div className="mt-7 font-mono text-[11px] text-ink-faint leading-relaxed border-t border-edge-soft pt-5">
               <p><span className="text-accent">$</span> 로그인하면 GitHub 프로필(이름·아바타)만 가져옵니다.</p>
-              <p className="mt-1"><span className="text-accent">$</span> 세션은 JWT로 유지되며 언제든 로그아웃할 수 있습니다.</p>
+              <p className="mt-1"><span className="text-accent">$</span> 토은 URL 단편으로 전달되어 서버 로그에 남지 않습니다.</p>
             </div>
           </div>
         </div>
