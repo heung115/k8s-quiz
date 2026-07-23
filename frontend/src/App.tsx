@@ -43,13 +43,13 @@ export default function App() {
       <SuspenseWrap>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/docs" element={<Docs />} />
           <Route path="/" element={<Root />} />
           <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
             <Route path="/problems" element={<Problems />} />
             <Route path="/problems/:id" element={<ProblemPage />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="/admin" element={<Admin />} />
-            <Route path="/docs" element={<Docs />} />
             <Route path="/leaderboard" element={<Leaderboard />} />
           </Route>
           <Route path="*" element={<NotFound />} />

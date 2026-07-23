@@ -1,3 +1,6 @@
+import { Link } from 'react-router-dom'
+import { useAuthStore } from '../stores/auth'
+import { ThemeToggle } from '../components/ThemeToggle'
 import { SectionLabel } from '../components/ui'
 
 function Code({ children }: { children: React.ReactNode }) {
@@ -23,7 +26,23 @@ function Item({ n, title, children }: { n: string; title: string; children: Reac
 }
 
 export function Docs() {
+  const { user } = useAuthStore()
   return (
+    <>
+    <header className="border-b border-edge bg-canvas/90 backdrop-blur sticky top-0 z-40">
+      <div className="max-w-3xl mx-auto px-5 h-14 flex items-center justify-between">
+        <Link to="/" className="flex items-center gap-2 font-display font-bold">
+          <span className="w-7 h-7 bg-accent text-white flex items-center justify-center text-base" aria-hidden="true">⎈</span>
+          K8S<span className="text-accent-hover">QUIZ</span>
+        </Link>
+        <div className="flex items-center gap-3">
+          <ThemeToggle />
+          {user
+            ? <Link to="/" className="btn-ghost text-sm py-1.5">콘솔</Link>
+            : <Link to="/login" className="btn-primary text-sm py-1.5">시작하기</Link>}
+        </div>
+      </div>
+    </header>
     <div className="max-w-3xl mx-auto px-5 py-10">
       <SectionLabel>DOCUMENTATION</SectionLabel>
       <h1 className="mt-3 font-display font-bold text-3xl tracking-tight">문서</h1>
@@ -85,5 +104,6 @@ base_image: k3s-base:latest`}</Block>
         </div>
       </section>
     </div>
+    </>
   )
 }
