@@ -5,7 +5,20 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useAuthStore } from '../stores/auth'
 import { useSessionStore } from '../stores/session'
+import { useThemeStore } from '../stores/theme'
 import { WSMessage } from '../types'
+
+function readTermTheme() {
+  const cs = getComputedStyle(document.documentElement)
+  const ch = (n: string) => cs.getPropertyValue(n).trim()
+  const rgb = (n: string) => { const c = ch(n); return c ? `rgb(${c})` : undefined }
+  return {
+    background: rgb('--terminal') || '#05080d',
+    foreground: rgb('--ink') || '#e6edf6',
+    cursor: rgb('--accent-hover') || '#4d84f0',
+    selectionBackground: ch('--accent-soft') || 'rgba(50, 108, 229, 0.35)',
+  }
+}
 
 export function Terminal() {
   const termRef = useRef<HTMLDivElement>(null)
@@ -14,6 +27,13 @@ export function Terminal() {
   const fitAddonRef = useRef<FitAddon | null>(null)
   const { accessToken } = useAuthStore()
   const { setWsConnected, handleWSMessage } = useSessionStore()
+  const theme = useThemeStore((s) => s.theme)
+
+  useEffect(() => {
+    if (xtermRef.current) {
+      xtermRef.current.options.theme = readTermTheme()
+    }
+  }, [theme])
 
   useEffect(() => {
     if (!termRef.current) return
@@ -22,12 +42,7 @@ export function Terminal() {
       cursorBlink: true,
       fontSize: 13.5,
       fontFamily: '"IBM Plex Mono", Menlo, Monaco, monospace',
-      theme: {
-        background: '#05080d',
-        foreground: '#e6edf6',
-        cursor: '#4d84f0',
-        selectionBackground: 'rgba(50, 108, 229, 0.35)',
-      },
+      theme: readTermTheme(),
     })
 
     const fitAddon = new FitAddon()
