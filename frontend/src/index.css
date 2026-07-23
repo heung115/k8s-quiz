@@ -2,8 +2,64 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-canvas text-ink antialiased;
+@layer base {
+  body {
+    @apply bg-canvas text-ink antialiased font-sans;
+  }
+
+  /* blueprint grid ambience over the whole app */
+  .bg-grid {
+    background-image:
+      linear-gradient(rgba(50, 108, 229, 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(50, 108, 229, 0.045) 1px, transparent 1px);
+    background-size: 36px 36px;
+  }
+
+  ::selection {
+    background: rgba(50, 108, 229, 0.4);
+    color: #e6edf6;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #26334a transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #26334a;
+    border-radius: 4px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid #326ce5;
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* mono micro-label used across the console */
+  .micro {
+    @apply font-mono text-[11px] uppercase tracking-[0.14em];
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover
+      text-white font-display font-semibold tracking-wide px-5 py-2.5
+      transition-all duration-150 hover:-translate-y-px active:translate-y-0
+      shadow-[0_0_24px_rgba(50,108,229,0.35)] hover:shadow-[0_0_32px_rgba(50,108,229,0.5)];
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 border border-edge
+      text-ink-muted hover:text-ink hover:border-accent/60 hover:bg-accent-dim
+      font-display font-semibold tracking-wide px-5 py-2.5 transition-all duration-150;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

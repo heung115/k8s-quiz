@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './stores/auth'
 import { Layout } from './components/Layout'
+import { Landing } from './pages/Landing'
 import { Dashboard } from './pages/Dashboard'
 import { Login } from './pages/Login'
 import { ProblemPage } from './pages/ProblemPage'
@@ -16,6 +17,16 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+/** `/` shows the public landing when logged out, the console when logged in */
+function Root() {
+  const { user } = useAuthStore()
+  return user ? (
+    <Layout><Dashboard /></Layout>
+  ) : (
+    <Landing />
+  )
+}
+
 export default function App() {
   const { loadFromStorage } = useAuthStore()
 
@@ -26,13 +37,13 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        <Route index element={<Dashboard />} />
-        <Route path="problems/:id" element={<ProblemPage />} />
-        <Route path="profile" element={<Profile />} />
-        <Route path="admin" element={<Admin />} />
-        <Route path="docs" element={<Docs />} />
-        <Route path="leaderboard" element={<Leaderboard />} />
+      <Route path="/" element={<Root />} />
+      <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+        <Route path="/problems/:id" element={<ProblemPage />} />
+        <Route path="/profile" element={<Profile />} />
+        <Route path="/admin" element={<Admin />} />
+        <Route path="/docs" element={<Docs />} />
+        <Route path="/leaderboard" element={<Leaderboard />} />
       </Route>
     </Routes>
   )

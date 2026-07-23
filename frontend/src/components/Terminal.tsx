@@ -20,12 +20,13 @@ export function Terminal() {
 
     const term = new XTerm({
       cursorBlink: true,
-      fontSize: 14,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontSize: 13.5,
+      fontFamily: '"IBM Plex Mono", Menlo, Monaco, monospace',
       theme: {
-        background: '#12151c',
-        foreground: '#e7eaf0',
-        cursor: '#e7eaf0',
+        background: '#05080d',
+        foreground: '#e6edf6',
+        cursor: '#4d84f0',
+        selectionBackground: 'rgba(50, 108, 229, 0.35)',
       },
     })
 

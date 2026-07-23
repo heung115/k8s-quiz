@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"context"
 	"fmt"
 	"sync"
@@ -198,14 +199,14 @@ func (s *Service) setupEnvironment(sess *Session, p *models.Problem, attempt *mo
 		s.emitStage(sess.UserID, "k3s_booting", "Waiting for k3s to boot...")
 
 		err := s.containerMgr.WaitReady(ctx, sess.ContainerID, func() bool {
-			result, err := s.containerMgr.Exec(ctx, sess.ContainerID, []string{"kubectl", "get", "nodes"})
-			return err == nil && result.ExitCode == 0
-		}, 60*time.Second)
+			result, err := s.containerMgr.Exec(ctx, sess.ContainerID, []string{"kubectl", "get", "nodes", "-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`})
+			return err == nil && result.ExitCode == 0 && strings.TrimSpace(result.Stdout) == "True"
+		}, 120*time.Second)
 		if err != nil {
 			sess.mu.Lock()
 			sess.Status = StatusFailed
 			sess.mu.Unlock()
-			s.failAttempt(ctx, attempt, "k3s boot timeout")
+			s.failAttempt(ctx, attempt, "k3s node did not become Ready")
 			return
 		}
 	}
