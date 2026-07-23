@@ -1,0 +1,13 @@
+id: node-taint
+title: "Node Taint로 인한 Pod Pending 해결"
+description: |
+  web-frontend Pod이 Pending 상태에서 스케줄링되지 못하고 있습니다.
+  Node에 설정된 taint를 확인하고, Pod이 정상적으로 Running 되도록 수정하세요.
+
+  힌트: kubectl describe node 명령어로 taint를 확인해보세요.
+category: scheduling
+difficulty: easy
+type: fix
+timeout_minutes: 15
+verify_type: script
+base_image: k3s-base:latest

@@ -1,0 +1,1 @@
+ALTER TABLE problems ADD COLUMN IF NOT EXISTS grading_prompt TEXT DEFAULT '';
