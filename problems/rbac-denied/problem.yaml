@@ -1,0 +1,13 @@
+id: rbac-denied
+title: "RBAC 권한 거부 해결"
+description: |
+  app-sa ServiceAccount를 사용하는 Pod에서 kubectl get pods 실행 시 권한 거부 오류가 발생합니다.
+  해당 ServiceAccount가 default 네임스페이스에서 Pod를 list할 수 있도록 RBAC를 수정하세요.
+
+  힌트: Role과 RoleBinding을 확인해보세요.
+category: rbac
+difficulty: medium
+type: fix
+timeout_minutes: 20
+verify_type: script
+base_image: k3s-base:latest

@@ -1,0 +1,13 @@
+id: pod-crashloop
+title: "CrashLoopBackOff 해결"
+description: |
+  web-app Pod이 CrashLoopBackOff 상태입니다.
+  원인을 파악하고 Pod이 정상적으로 Running 상태가 되도록 수정하세요.
+  
+  힌트: kubectl describe pod 명령어로 이벤트를 확인해보세요.
+category: pod
+difficulty: easy
+type: fix
+timeout_minutes: 15
+verify_type: script
+base_image: k3s-base:latest
