@@ -144,7 +144,7 @@ export function Dashboard() {
   const solvedMap = progress?.solved ?? {}
   const solvedCount = progress?.solved_count ?? 0
   const total = problems.length
-  const pct = total > 0 ? Math.round((solvedCount / total) * 100) : 0
+  const pct = total > 0 ? Math.min(100, Math.round((solvedCount / total) * 100)) : 0
   const unlocked = achievements.filter((a) => a.unlocked).length
 
   const recent = useMemo(
@@ -173,7 +173,7 @@ export function Dashboard() {
           <Stat value={solvedCount} label="solved" />
           <Stat value={progress?.total_attempts ?? 0} label="attempts" />
           <Stat value={`${pct}%`} label="clearance" />
-          <Stat value={total - solvedCount} label="open" />
+          <Stat value={Math.max(0, total - solvedCount)} label="open" />
         </div>
       </header>
 
