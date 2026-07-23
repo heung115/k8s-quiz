@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { TerminalReplay, SectionLabel, SevTag, TypeTag, categoryMeta } from '../components/ui'
+import { TerminalReplay, SectionLabel, SevTag, TypeTag, SolveStamp, categoryMeta } from '../components/ui'
 import { useAuthStore } from '../stores/auth'
 import { ThemeToggle } from '../components/ThemeToggle'
 import {
-  ArrowRight, ServerCog, Stethoscope, Wrench, BadgeCheck,
+  ArrowRight,
   BookOpen, Trophy, ChevronRight,
 } from 'lucide-react'
 
@@ -44,12 +44,6 @@ const SYMPTOMS = [
   'FailedScheduling', 'BackOff', 'ErrImagePull',
 ]
 
-const STEPS = [
-  { n: '01', icon: ServerCog,  title: '환경 부팅',     desc: '버튼 한 번이면 격리된 k3s 클러스터가 뜹니다. 로컬 셋업은 필요 없어요.' },
-  { n: '02', icon: Stethoscope, title: '직접 진단',     desc: '웹 터미널에서 kubectl로 증상을 추적합니다. 실제 장애와 같은 시나리오입니다.' },
-  { n: '03', icon: Wrench,      title: '원인 수정',     desc: 'ConfigMap, RBAC, Taint… 원인을 찾았다면 직접 고칩니다.' },
-  { n: '04', icon: BadgeCheck,  title: '스크립트 검증', desc: '검증 스크립트가 판정합니다. 운이 아니라 실력으로 통과하세요.' },
-]
 
 const TEASERS = [
   { id: 'pod-crashloop',    code: 'INC-101', title: 'CrashLoopBackOff 해결',        category: 'pod',        difficulty: 'easy',   type: 'fix',    desc: '배포 직후 Pod이 무한 재시작됩니다. 이벤트를 읽어 원인을 제거하세요.', timeout: 30 },
@@ -193,33 +187,113 @@ export function Landing() {
       {/* ---------- how it works ---------- */}
       <section id="how" className="max-w-6xl mx-auto px-5 py-24">
         <Reveal>
-          <SectionLabel>HOW IT WORKS</SectionLabel>
+          <SectionLabel>HOW TO USE</SectionLabel>
           <h2 className="mt-4 font-display font-bold text-3xl sm:text-4xl tracking-tight">
-            실제 온콜처럼, <span className="text-accent-hover">4단계</span>로 진행됩니다
+            네 번만 따라 하면 됩니다
           </h2>
+          <p className="mt-3 text-ink-muted max-w-2xl">
+            각 단계의 실제 화면입니다. 로그인하지 않아도 흐름을 미리 볼 수 있어요.
+          </p>
         </Reveal>
-        <div className="mt-14 relative">
-          <div className="hidden lg:block absolute top-7 left-[6%] right-[6%] h-px bg-gradient-to-r from-accent/0 via-accent/40 to-accent/0" aria-hidden="true" />
-          <ol className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-12">
-            {STEPS.map((s, i) => {
-              const Icon = s.icon
-              return (
-                <Reveal key={s.n} delay={i * 100}>
-                  <li className="relative">
-                    <div className="flex items-center gap-3">
-                      <span className="w-14 h-14 border border-edge bg-surface flex items-center justify-center text-accent-hover shadow-[0_0_24px_rgba(50,108,229,0.15)]">
-                        <Icon className="w-6 h-6" aria-hidden="true" />
-                      </span>
-                      <span className="font-display font-bold text-3xl text-edge select-none">{s.n}</span>
-                    </div>
-                    <h3 className="mt-5 font-display font-semibold text-lg">{s.title}</h3>
-                    <p className="mt-2 text-sm text-ink-muted leading-relaxed">{s.desc}</p>
-                  </li>
-                </Reveal>
-              )
-            })}
-          </ol>
+
+        <div className="mt-12 space-y-5">
+          {/* 01 — pick a scenario */}
+          <Reveal>
+            <div className="grid lg:grid-cols-[1fr_1.05fr] gap-6 lg:gap-10 items-center border border-edge bg-surface p-6">
+              <div>
+                <div className="flex items-center gap-3">
+                  <span className="font-display font-bold text-2xl text-edge select-none">01</span>
+                  <h3 className="font-display font-semibold text-lg">시나리오 고르기</h3>
+                </div>
+                <p className="mt-2 text-sm text-ink-muted leading-relaxed">
+                  문제 목록에서 카테고리·난이도(SEV-3/2/1)로 좁히거나 검색합니다.
+                  푼 문제는 SOLVED 스탬프가 찍혀 한눈에 구분됩니다.
+                </p>
+              </div>
+              <div className="border border-edge bg-canvas p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5"><SevTag difficulty="easy" /><TypeTag type="fix" /></div>
+                  <SolveStamp state="open" />
+                </div>
+                <p className="mt-3 font-display font-semibold text-sm">CrashLoopBackOff 해결</p>
+                <p className="mt-1 micro text-ink-faint">INC-142 · POD · 30MIN</p>
+              </div>
+            </div>
+          </Reveal>
+
+          {/* 02 — start environment */}
+          <Reveal delay={80}>
+            <div className="grid lg:grid-cols-[1fr_1.05fr] gap-6 lg:gap-10 items-center border border-edge bg-surface p-6">
+              <div>
+                <div className="flex items-center gap-3">
+                  <span className="font-display font-bold text-2xl text-edge select-none">02</span>
+                  <h3 className="font-display font-semibold text-lg">환경 시작</h3>
+                </div>
+                <p className="mt-2 text-sm text-ink-muted leading-relaxed">
+                  <strong className="text-ink">환경 시작</strong>을 누르면 격리된 k3s 클러스터가 뜹니다.
+                  부팅 → 시나리오 주입 → 대기 단계를 타임라인으로 보여주며, 끝나면 터미널이 열립니다.
+                </p>
+              </div>
+              <div className="border border-edge bg-canvas p-4">
+                <p className="micro text-ink-faint mb-3">ENVIRONMENT</p>
+                <ol className="space-y-2.5 text-sm">
+                  <li className="flex items-center gap-2.5"><span className="w-2 h-2 bg-success" aria-hidden="true" /><span className="text-ink">클러스터 부팅</span></li>
+                  <li className="flex items-center gap-2.5"><span className="w-2 h-2 bg-success" aria-hidden="true" /><span className="text-ink">시나리오 주입</span></li>
+                  <li className="flex items-center gap-2.5"><span className="w-2 h-2 bg-accent-hover animate-pulse-dot" aria-hidden="true" /><span className="text-accent-hover">대기</span></li>
+                </ol>
+              </div>
+            </div>
+          </Reveal>
+
+          {/* 03 — diagnose in the terminal */}
+          <Reveal delay={160}>
+            <div className="grid lg:grid-cols-[1fr_1.05fr] gap-6 lg:gap-10 items-center border border-edge bg-surface p-6">
+              <div>
+                <div className="flex items-center gap-3">
+                  <span className="font-display font-bold text-2xl text-edge select-none">03</span>
+                  <h3 className="font-display font-semibold text-lg">터미널에서 진단</h3>
+                </div>
+                <p className="mt-2 text-sm text-ink-muted leading-relaxed">
+                  웹 터미널은 실제 컨테이너의 셸입니다. <span className="font-mono text-info">kubectl</span>로
+                  증상을 추적하고 원인을 직접 고칩니다.
+                </p>
+              </div>
+              <div className="border border-edge bg-terminal p-4 font-mono text-xs leading-relaxed">
+                <p><span className="text-accent-hover select-none">$ </span>kubectl get pods</p>
+                <p className="text-danger">web-app-5b687cff65-x2k9   0/1   CrashLoopBackOff</p>
+                <p className="mt-1"><span className="text-accent-hover select-none">$ </span>kubectl describe pod web-app-…</p>
+                <p className="text-ink-faint">Warning  Failed  configmap "app-config" not found</p>
+              </div>
+            </div>
+          </Reveal>
+
+          {/* 04 — verify */}
+          <Reveal delay={240}>
+            <div className="grid lg:grid-cols-[1fr_1.05fr] gap-6 lg:gap-10 items-center border border-edge bg-surface p-6">
+              <div>
+                <div className="flex items-center gap-3">
+                  <span className="font-display font-bold text-2xl text-edge select-none">04</span>
+                  <h3 className="font-display font-semibold text-lg">검증으로 통과 확인</h3>
+                </div>
+                <p className="mt-2 text-sm text-ink-muted leading-relaxed">
+                  <strong className="text-ink">검증</strong> 버튼이 판정 스크립트를 실행해 결과를 보여줍니다.
+                  FIND 시나리오는 원인을 선택지로 골라 제출합니다.
+                </p>
+              </div>
+              <div className="border border-success/40 bg-terminal">
+                <div className="px-3 py-2 border-b border-success/30 micro text-success">VERIFICATION PASSED</div>
+                <p className="p-3 font-mono text-xs text-success">✓ Pod is Running and Ready</p>
+              </div>
+            </div>
+          </Reveal>
         </div>
+
+        <Reveal delay={120}>
+          <div className="mt-8 flex flex-wrap items-center gap-4">
+            <Link to="/docs" className="btn-ghost">전체 사용법 보기</Link>
+            <span className="micro text-ink-faint">단축키 · 용어 · 문제 제작법은 문서에서</span>
+          </div>
+        </Reveal>
       </section>
 
       {/* ---------- scenarios ---------- */}
