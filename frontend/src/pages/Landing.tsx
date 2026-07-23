@@ -270,7 +270,7 @@ export function Landing() {
           <Reveal delay={120}>
             <div className="mt-10 text-center">
               {user ? (
-                <Link to="/" className="btn-ghost">전체 카탈로그 열기 <ArrowRight className="w-4 h-4" aria-hidden="true" /></Link>
+                <Link to="/problems" className="btn-ghost">전체 카탈로그 열기 <ArrowRight className="w-4 h-4" aria-hidden="true" /></Link>
               ) : (
                 <button onClick={startLogin} className="btn-ghost">
                   <GithubMark className="w-4 h-4" /> 로그인하고 전체 카탈로그 보기

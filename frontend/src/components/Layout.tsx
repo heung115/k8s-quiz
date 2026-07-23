@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
-import { BookOpen, Shield, LogOut, Trophy, LayoutGrid } from 'lucide-react'
+import { BookOpen, Shield, LogOut, Trophy, ListChecks } from 'lucide-react'
 
 export function Layout({ children }: { children?: React.ReactNode }) {
   const { user, logout } = useAuthStore()
@@ -39,7 +39,7 @@ export function Layout({ children }: { children?: React.ReactNode }) {
               <span className="hidden sm:inline">K8S<span className="text-accent-hover">QUIZ</span></span>
             </Link>
             <nav className="flex items-center overflow-x-auto" aria-label="Main">
-              {navItem('/', '콘솔', <LayoutGrid className="w-3.5 h-3.5" aria-hidden="true" />)}
+              {navItem('/problems', '문제', <ListChecks className="w-3.5 h-3.5" aria-hidden="true" />)}
               {navItem('/leaderboard', '리더보드', <Trophy className="w-3.5 h-3.5" aria-hidden="true" />)}
               {navItem('/docs', '문서', <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />)}
               {user?.role === 'admin' && navItem('/admin', '관리', <Shield className="w-3.5 h-3.5" aria-hidden="true" />)}
