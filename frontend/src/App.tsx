@@ -10,6 +10,7 @@ import { Profile } from './pages/Profile'
 import { Admin } from './pages/Admin'
 import { Docs } from './pages/Docs'
 import { Leaderboard } from './pages/Leaderboard'
+import { Problems } from './pages/Problems'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore()
@@ -39,6 +40,7 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<Root />} />
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+        <Route path="/problems" element={<Problems />} />
         <Route path="/problems/:id" element={<ProblemPage />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="/admin" element={<Admin />} />
