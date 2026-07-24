@@ -2,6 +2,30 @@
 
 웹 기반 Kubernetes 트러블슈팅 플랫폼. 고장난 k3s 환경을 웹 터미널에서 직접 해결하고 검증받습니다.
 
+## 프로젝트 상태
+
+- 개인 프로젝트로 개발 중인 로컬 프로토타입입니다.
+- 사용자별 k3s 컨테이너를 실행하므로 신뢰할 수 있는 개발 환경에서만
+  사용해야 합니다.
+- 공개 서비스 트래픽이나 프로덕션 용량을 검증한 프로젝트가 아닙니다.
+- 보안 점검 결과와 남은 위험은 [`SECURITY.md`](SECURITY.md)에
+  기록합니다.
+
+## AI-assisted development
+
+Codex, Cursor, ChatGPT, Antigravity를 개발 보조 도구로 사용했습니다.
+저장소 안의 agent harness는 backend, frontend, container, problem
+authoring, QA 역할과 handoff 경계를 정의합니다.
+
+- Team spec: [`docs/harness/k8s-quiz/team-spec.md`](docs/harness/k8s-quiz/team-spec.md)
+- Specialist skills: [`.agents/skills/`](.agents/skills/)
+- Coordination artifacts: [`_workspace/`](_workspace/)
+- Development log: [`docs/development-history.md`](docs/development-history.md)
+
+AI가 제안한 변경은 코드 반영만으로 완료 처리하지 않고 Go test,
+TypeScript build, Docker Compose E2E, 실제 k3s 문제의 fail→fix→pass,
+보안 감사와 재현 가능한 부하·query-plan 실험으로 확인합니다.
+
 ## Quick Start
 
 ```bash
@@ -43,6 +67,42 @@ docker run -d --name k8s-quiz-db \
 migrate -path backend/migrations -database "postgres://k8squiz:k8squiz@localhost:5432/k8squiz?sslmode=disable" up
 ```
 
+## 로컬 부하 테스트
+
+실행 중인 백엔드의 `/health` 엔드포인트를 기본 200 RPS로 30초간
+검증합니다. 이 테스트는 로컬 기준선 확인용이며 실제 사용자 트래픽이나
+프로덕션 용량을 의미하지 않습니다.
+
+```bash
+k6 run load-tests/health.js
+```
+
+조건은 환경변수로 변경할 수 있습니다.
+
+```bash
+BASE_URL=http://127.0.0.1:8080 \
+TARGET_RPS=300 \
+DURATION=60s \
+MAX_VUS=150 \
+k6 run load-tests/health.js
+```
+
+### PostgreSQL query plan
+
+실제 attempt 조회 query를 10만 건 합성 데이터로 재현해
+`EXPLAIN ANALYZE` 결과를 비교합니다. 전체 작업은 transaction에서
+실행한 뒤 rollback하므로 합성 데이터가 남지 않습니다.
+
+```bash
+docker compose exec -T db \
+  psql -U k8squiz -d k8squiz -f - \
+  < load-tests/postgres_attempts_index.sql
+```
+
+측정 결과와 적용·기각한 index는
+[`docs/postgres-query-plan-2026-07-24.md`](docs/postgres-query-plan-2026-07-24.md)에
+기록했습니다.
+
 ## 프로젝트 구조
 
 ```
@@ -80,6 +140,12 @@ k8s-quiz/
 │   └── configmap-typo/
 ├── docker/
 │   └── k3s-base/                   # k3s 베이스 이미지
+├── load-tests/                     # k6 및 PostgreSQL query-plan 실험
+├── docs/
+│   ├── harness/                    # repo-local agent team spec
+│   ├── development-history.md      # 구현·E2E 검증 기록
+│   └── *-2026-07-24.md             # 재현 가능한 성능 기준선
+├── .agents/skills/                 # 역할별 개발·QA harness
 ├── docker-compose.yaml
 ├── .github/workflows/ci.yaml
 └── .env.example
