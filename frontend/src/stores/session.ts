@@ -17,6 +17,16 @@ interface SessionState {
   clear: () => void
 }
 
+// Maps backend boot stages (service.go emitStage) onto the session.status the
+// UI gates on (ProblemPage verify button + StageTimeline). Stages not listed
+// (e.g. container_crashed) leave status untouched so existing handling stands.
+const STATUS_BY_STAGE: Record<string, string> = {
+  container_created: 'booting',
+  k3s_booting: 'booting',
+  setup_running: 'setting_up',
+  ready: 'ready',
+}
+
 export const useSessionStore = create<SessionState>((set) => ({
   session: null,
   stage: '',
@@ -31,9 +41,19 @@ export const useSessionStore = create<SessionState>((set) => ({
   setWsConnected: (connected) => set({ wsConnected: connected }),
   handleWSMessage: (msg) => {
     switch (msg.type) {
-      case 'stage':
-        set({ stage: msg.stage || '', stageMessage: msg.message || '' })
+      case 'stage': {
+        const stage = msg.stage || ''
+        const nextStatus = STATUS_BY_STAGE[stage]
+        set((state) => ({
+          stage,
+          stageMessage: msg.message || '',
+          session:
+            nextStatus && state.session && state.session.status !== nextStatus
+              ? { ...state.session, status: nextStatus }
+              : state.session,
+        }))
         break
+      }
       case 'verify_result':
         set({ verifyResult: { success: msg.success || false, log: msg.log || '' } })
         break

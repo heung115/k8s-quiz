@@ -23,19 +23,12 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 
 func (h *Handler) GetCurrent(c *gin.Context) {
 	u := middleware.GetUser(c)
-	sess := h.svc.GetSession(u.ID)
-	if sess == nil {
+	cur := h.svc.GetCurrentSession(u.ID)
+	if cur == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "no active session"})
 		return
 	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	c.JSON(http.StatusOK, gin.H{
-		"session_id": sess.ID,
-		"problem_id": sess.ProblemID,
-		"status":     string(sess.Status),
-		"timeout_at": sess.TimeoutAt,
-	})
+	c.JSON(http.StatusOK, cur)
 }
 
 func (h *Handler) EndCurrent(c *gin.Context) {

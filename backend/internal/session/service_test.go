@@ -110,8 +110,8 @@ func (m *mockProblemStore) GetAttempt(ctx context.Context, id string) (*models.A
 
 type mockScriptProvider struct{}
 
-func (m *mockScriptProvider) HasSetupScript(problemID string) bool    { return false }
-func (m *mockScriptProvider) HasVerifyScript(problemID string) bool   { return true }
+func (m *mockScriptProvider) HasSetupScript(problemID string) bool            { return false }
+func (m *mockScriptProvider) HasVerifyScript(problemID string) bool           { return true }
 func (m *mockScriptProvider) GetSetupScript(problemID string) (string, error) { return "", nil }
 func (m *mockScriptProvider) GetVerifyScript(problemID string) (string, error) {
 	return "echo ok", nil
@@ -285,11 +285,11 @@ func TestVerifyCallback(t *testing.T) {
 func TestSubmitChoice(t *testing.T) {
 	svc, _, store := newTestService()
 	store.problems["p1"] = &models.Problem{
-		ID:            "p1",
+		ID:             "p1",
 		TimeoutMinutes: 30,
-		BaseImage:     "k3s-base:latest",
-		VerifyType:    "choice",
-		CorrectChoice: "b",
+		BaseImage:      "k3s-base:latest",
+		VerifyType:     "choice",
+		CorrectChoice:  "b",
 	}
 
 	svc.StartProblem(context.Background(), "user-1", "p1")
@@ -404,5 +404,128 @@ func TestVerifyTextNoGrader(t *testing.T) {
 	_, _, err := svc.Verify(context.Background(), "user-1")
 	if err == nil {
 		t.Fatal("expected error when grader not configured")
+	}
+}
+
+func attemptStatus(t *testing.T, store *mockProblemStore, id string) string {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	a, ok := store.attempts[id]
+	if !ok || a == nil {
+		t.Fatalf("attempt %s missing", id)
+	}
+	return a.Status
+}
+
+// STATE-1: the timeout path must persist attempt status "timeout", not "failed".
+func TestCheckTimeoutsWritesTimeoutAttempt(t *testing.T) {
+	svc, mgr, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+
+	svc.StartProblem(context.Background(), "user-1", "p1")
+	time.Sleep(100 * time.Millisecond)
+
+	sess := svc.GetSession("user-1")
+	if sess == nil {
+		t.Fatal("expected active session")
+	}
+	sess.mu.Lock()
+	sess.TimeoutAt = time.Now().Add(-time.Second)
+	attemptID := sess.AttemptID
+	sess.mu.Unlock()
+
+	expired := svc.checkTimeouts()
+	if len(expired) != 1 || expired[0] != "user-1" {
+		t.Fatalf("expected user-1 expired, got %v", expired)
+	}
+	if svc.GetSession("user-1") != nil {
+		t.Error("expected session removed after timeout")
+	}
+	if got := attemptStatus(t, store, attemptID); got != "timeout" {
+		t.Errorf("expected attempt status timeout, got %s", got)
+	}
+	mgr.mu.Lock()
+	removed := len(mgr.removed)
+	mgr.mu.Unlock()
+	if removed != 1 {
+		t.Errorf("expected 1 container removal, got %d", removed)
+	}
+}
+
+func TestCheckTimeoutsSkipsCompleted(t *testing.T) {
+	svc, _, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+
+	svc.StartProblem(context.Background(), "user-1", "p1")
+	time.Sleep(100 * time.Millisecond)
+
+	sess := svc.GetSession("user-1")
+	sess.mu.Lock()
+	sess.TimeoutAt = time.Now().Add(-time.Second)
+	sess.Status = StatusCompleted
+	sess.mu.Unlock()
+
+	if expired := svc.checkTimeouts(); len(expired) != 0 {
+		t.Errorf("completed session must not be expired, got %v", expired)
+	}
+	if svc.GetSession("user-1") == nil {
+		t.Error("completed session must survive the timeout scan")
+	}
+}
+
+// User-initiated end keeps the "failed" semantics.
+func TestEndSessionWritesFailedAttempt(t *testing.T) {
+	svc, _, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+
+	svc.StartProblem(context.Background(), "user-1", "p1")
+	time.Sleep(100 * time.Millisecond)
+
+	attemptID := svc.GetSession("user-1").AttemptID
+	svc.EndSession(context.Background(), "user-1")
+
+	if got := attemptStatus(t, store, attemptID); got != "failed" {
+		t.Errorf("expected attempt status failed after user end, got %s", got)
+	}
+}
+
+// Start-replacement of an existing session keeps the "failed" semantics.
+func TestStartReplacementMarksOldAttemptFailed(t *testing.T) {
+	svc, _, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+	store.problems["p2"] = &models.Problem{ID: "p2", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+
+	svc.StartProblem(context.Background(), "user-1", "p1")
+	time.Sleep(50 * time.Millisecond)
+	firstAttemptID := svc.GetSession("user-1").AttemptID
+
+	svc.StartProblem(context.Background(), "user-1", "p2")
+	time.Sleep(50 * time.Millisecond)
+
+	if got := attemptStatus(t, store, firstAttemptID); got != "failed" {
+		t.Errorf("expected replaced attempt status failed, got %s", got)
+	}
+}
+
+// GetCurrentSession returns the 4-field snapshot used by /sessions/current and
+// /problems/:id/start.
+func TestGetCurrentSession(t *testing.T) {
+	svc, _, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+
+	if cur := svc.GetCurrentSession("user-1"); cur != nil {
+		t.Fatalf("expected nil without session, got %+v", cur)
+	}
+
+	svc.StartProblem(context.Background(), "user-1", "p1")
+	time.Sleep(50 * time.Millisecond)
+
+	cur := svc.GetCurrentSession("user-1")
+	if cur == nil {
+		t.Fatal("expected session snapshot")
+	}
+	if cur.SessionID == "" || cur.ProblemID != "p1" || cur.Status == "" || cur.TimeoutAt.IsZero() {
+		t.Errorf("incomplete snapshot: %+v", cur)
 	}
 }
