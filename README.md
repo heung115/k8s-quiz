@@ -1,5 +1,7 @@
 # K8s Quiz
 
+[![CI](https://github.com/heung115/k8s-quiz/actions/workflows/ci.yaml/badge.svg)](https://github.com/heung115/k8s-quiz/actions/workflows/ci.yaml)
+
 웹 기반 Kubernetes 트러블슈팅 플랫폼. 고장난 k3s 환경을 웹 터미널에서 직접 해결하고 검증받습니다.
 
 ## 프로젝트 상태
