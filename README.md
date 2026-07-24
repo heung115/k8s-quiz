@@ -13,21 +13,6 @@
 - 보안 점검 결과와 남은 위험은 [`SECURITY.md`](SECURITY.md)에
   기록합니다.
 
-## AI-assisted development
-
-Codex, Cursor, ChatGPT, Antigravity를 개발 보조 도구로 사용했습니다.
-저장소 안의 agent harness는 backend, frontend, container, problem
-authoring, QA 역할과 handoff 경계를 정의합니다.
-
-- Team spec: [`docs/harness/k8s-quiz/team-spec.md`](docs/harness/k8s-quiz/team-spec.md)
-- Specialist skills: [`.agents/skills/`](.agents/skills/)
-- Coordination artifacts: [`_workspace/`](_workspace/)
-- Development log: [`docs/development-history.md`](docs/development-history.md)
-
-AI가 제안한 변경은 코드 반영만으로 완료 처리하지 않고 Go test,
-TypeScript build, Docker Compose E2E, 실제 k3s 문제의 fail→fix→pass,
-보안 감사와 재현 가능한 부하·query-plan 실험으로 확인합니다.
-
 ## Quick Start
 
 ```bash
@@ -144,10 +129,8 @@ k8s-quiz/
 │   └── k3s-base/                   # k3s 베이스 이미지
 ├── load-tests/                     # k6 및 PostgreSQL query-plan 실험
 ├── docs/
-│   ├── harness/                    # repo-local agent team spec
 │   ├── development-history.md      # 구현·E2E 검증 기록
 │   └── *-2026-07-24.md             # 재현 가능한 성능 기준선
-├── .agents/skills/                 # 역할별 개발·QA harness
 ├── docker-compose.yaml
 ├── .github/workflows/ci.yaml
 └── .env.example

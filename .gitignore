@@ -19,3 +19,11 @@ frontend/dist/
 
 # Docker
 pgdata/
+
+# internal working notes — keep local, exclude from public repo
+HANDOFF.md
+AGENTS.md
+.agents/
+.codex/
+_workspace/
+docs/harness/
