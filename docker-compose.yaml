@@ -2,19 +2,32 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8080:8080"
+      - "${SERVER_PORT:-8080}:${SERVER_PORT:-8080}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./problems:/problems
     environment:
+      # In-compose network address of the db service. Not interpolated from
+      # .env on purpose: the .env DATABASE_URL targets localhost for running
+      # the backend outside compose, which would be wrong inside the network.
       - DATABASE_URL=postgres://k8squiz:k8squiz@db:5432/k8squiz?sslmode=disable
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
       - JWT_SECRET=${JWT_SECRET}
       - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
       - PROBLEMS_REPO_PATH=/problems
-      - FRONTEND_URL=http://localhost:5173
+      # Interpolated so non-local deployments activate the weak-secret boot
+      # guard in config.Validate(); local .env keeps http://localhost:5173.
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
       - DOCKER_HOST=unix:///var/run/docker.sock
+      - SERVER_PORT=${SERVER_PORT:-8080}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
+      # Pre-warm pool (0 = disabled). Warm containers use the default Docker
+      # network, so enabling this relaxes per-session network isolation.
+      - POOL_SIZE=${POOL_SIZE:-0}
+      - POOL_IMAGE=${POOL_IMAGE:-k3s-base:latest}
     depends_on:
       db:
         condition: service_healthy
@@ -36,6 +49,9 @@ services:
       - POSTGRES_DB=k8squiz
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # First-boot schema seed only (initdb.d runs on empty volume). The
+      # .down.sql files are IF EXISTS no-ops, so mounting the dir is safe;
+      # runtime migrations are applied by the migrate CLI (see README).
       - ./backend/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U k8squiz"]

@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"github.com/gin-gonic/gin"
+	"github.com/k8s-quiz/backend/internal/session"
 	"github.com/k8s-quiz/backend/pkg/middleware"
 	"github.com/k8s-quiz/backend/pkg/models"
 )
@@ -28,6 +29,7 @@ type SessionService interface {
 	Verify(ctx context.Context, userID string) (bool, string, error)
 	SubmitChoice(ctx context.Context, userID, choiceID string) (bool, error)
 	ResetEnvironment(ctx context.Context, userID string) error
+	GetCurrentSession(userID string) *session.CurrentSession
 }
 
 type ProblemRepository interface {
@@ -76,10 +78,11 @@ func (h *Handler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list problems"})
 		return
 	}
-	if problems == nil {
-		problems = []models.Problem{}
+	sanitized := make([]models.Problem, len(problems))
+	for i, p := range problems {
+		sanitized[i] = sanitizeProblem(p)
 	}
-	c.JSON(http.StatusOK, gin.H{"problems": problems})
+	c.JSON(http.StatusOK, gin.H{"problems": sanitized})
 }
 
 func (h *Handler) Get(c *gin.Context) {
@@ -88,18 +91,37 @@ func (h *Handler) Get(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "problem not found"})
 		return
 	}
-	c.JSON(http.StatusOK, p)
+	c.JSON(http.StatusOK, sanitizeProblem(*p))
+}
+
+// sanitizeProblem returns a copy of p with the answer and grading rubric
+// scrubbed, for user-facing endpoints only (admin routes keep the full model).
+// Both fields are json:",omitempty", so zeroing drops them from the response;
+// choices stay visible because users need the option list.
+func sanitizeProblem(p models.Problem) models.Problem {
+	p.CorrectChoice = ""
+	p.GradingPrompt = ""
+	return p
 }
 
 func (h *Handler) Start(c *gin.Context) {
 	u := middleware.GetUser(c)
-	sessionID, err := h.sessionSvc.StartProblem(c.Request.Context(), u.ID, c.Param("id"))
-	if err != nil {
+	if _, err := h.sessionSvc.StartProblem(c.Request.Context(), u.ID, c.Param("id")); err != nil {
 		log.Printf("start problem %s for %s failed: %v", c.Param("id"), u.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start environment"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"session_id": sessionID})
+	// Return the same session snapshot as GET /api/sessions/current
+	// (session_id, problem_id, status, timeout_at) so the client can drive the
+	// countdown and status UI without a second round trip. StartProblem has
+	// released the per-user lock by now, so this cannot deadlock.
+	cur := h.sessionSvc.GetCurrentSession(u.ID)
+	if cur == nil {
+		log.Printf("start problem %s for %s: no active session after start", c.Param("id"), u.ID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start environment"})
+		return
+	}
+	c.JSON(http.StatusOK, cur)
 }
 
 func (h *Handler) Reset(c *gin.Context) {

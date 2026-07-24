@@ -122,7 +122,7 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 	existing := s.sessions[userID]
 	s.mu.Unlock()
 	if existing != nil {
-		s.endSessionLocked(context.Background(), userID)
+		s.endSessionLocked(context.Background(), userID, "failed")
 	}
 
 	p, err := s.problemStore.FindByID(ctx, problemID)
@@ -414,14 +414,22 @@ func (s *Service) userLock(userID string) *sync.Mutex {
 }
 
 func (s *Service) EndSession(ctx context.Context, userID string) {
+	s.endSession(ctx, userID, "failed")
+}
+
+// endSession tears down the user's session, recording attemptStatus on the
+// in-progress attempt: "failed" for user-initiated end / start-replacement,
+// "timeout" when the timeout watcher expires the session. The caller must NOT
+// hold the per-user lock.
+func (s *Service) endSession(ctx context.Context, userID, attemptStatus string) {
 	ul := s.userLock(userID)
 	ul.Lock()
 	defer ul.Unlock()
-	s.endSessionLocked(ctx, userID)
+	s.endSessionLocked(ctx, userID, attemptStatus)
 }
 
 // endSessionLocked tears down a session; the caller must hold the per-user lock.
-func (s *Service) endSessionLocked(ctx context.Context, userID string) {
+func (s *Service) endSessionLocked(ctx context.Context, userID, attemptStatus string) {
 	s.mu.Lock()
 	sess, ok := s.sessions[userID]
 	if ok {
@@ -435,7 +443,7 @@ func (s *Service) endSessionLocked(ctx context.Context, userID string) {
 		if attempt != nil && attempt.Status == "in_progress" {
 			now := time.Now()
 			duration := int(now.Sub(attempt.StartedAt).Seconds())
-			attempt.Status = "failed"
+			attempt.Status = attemptStatus
 			attempt.FinishedAt = &now
 			attempt.DurationSeconds = &duration
 			s.problemStore.UpdateAttempt(ctx, attempt)
@@ -447,6 +455,33 @@ func (s *Service) GetSession(userID string) *Session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.sessions[userID]
+}
+
+// CurrentSession is the user-facing snapshot of an active session. It is the
+// response shape of GET /api/sessions/current and POST /api/problems/:id/start.
+type CurrentSession struct {
+	SessionID string    `json:"session_id"`
+	ProblemID string    `json:"problem_id"`
+	Status    Status    `json:"status"`
+	TimeoutAt time.Time `json:"timeout_at"`
+}
+
+// GetCurrentSession snapshots the user's active session, or nil if there is
+// none. It takes only the session lock, so it is safe to call right after
+// StartProblem returns (the per-user lock is released by then).
+func (s *Service) GetCurrentSession(userID string) *CurrentSession {
+	sess := s.GetSession(userID)
+	if sess == nil {
+		return nil
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return &CurrentSession{
+		SessionID: sess.ID,
+		ProblemID: sess.ProblemID,
+		Status:    sess.Status,
+		TimeoutAt: sess.TimeoutAt,
+	}
 }
 
 func (s *Service) CleanupAll(ctx context.Context) {
@@ -498,30 +533,39 @@ func (s *Service) crashWatcher() {
 	}
 }
 
+// checkTimeouts expires every session past its deadline, persisting attempt
+// status "timeout" and tearing the container down. It returns the expired
+// userIDs so the watcher can fire the session_ended{reason:"timeout"} callback.
+func (s *Service) checkTimeouts() []string {
+	s.mu.RLock()
+	var expired []string
+	for userID, sess := range s.sessions {
+		sess.mu.Lock()
+		if time.Now().After(sess.TimeoutAt) && sess.Status != StatusCompleted {
+			sess.Status = StatusTimeout
+			expired = append(expired, userID)
+		}
+		remaining := time.Until(sess.TimeoutAt)
+		if remaining > 0 && remaining < 5*time.Minute && sess.Status == StatusReady {
+			if s.onTimeoutWarn != nil {
+				s.onTimeoutWarn(userID, int(remaining.Seconds()))
+			}
+		}
+		sess.mu.Unlock()
+	}
+	s.mu.RUnlock()
+
+	for _, userID := range expired {
+		s.endSession(context.Background(), userID, "timeout")
+	}
+	return expired
+}
+
 func (s *Service) timeoutWatcher() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		s.mu.RLock()
-		var expired []string
-		for userID, sess := range s.sessions {
-			sess.mu.Lock()
-			if time.Now().After(sess.TimeoutAt) && sess.Status != StatusCompleted {
-				sess.Status = StatusTimeout
-				expired = append(expired, userID)
-			}
-			remaining := time.Until(sess.TimeoutAt)
-			if remaining > 0 && remaining < 5*time.Minute && sess.Status == StatusReady {
-				if s.onTimeoutWarn != nil {
-					s.onTimeoutWarn(userID, int(remaining.Seconds()))
-				}
-			}
-			sess.mu.Unlock()
-		}
-		s.mu.RUnlock()
-
-		for _, userID := range expired {
-			s.EndSession(context.Background(), userID)
+		for _, userID := range s.checkTimeouts() {
 			if s.onTimeout != nil {
 				s.onTimeout(userID)
 			}
