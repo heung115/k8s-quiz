@@ -79,10 +79,6 @@ export function Landing() {
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
-  const startLogin = () => {
-    window.location.href = '/api/auth/github'
-  }
-
   return (
     <div className="min-h-screen bg-canvas bg-grid">
 
@@ -96,7 +92,7 @@ export function Landing() {
           <nav className="hidden md:flex items-center gap-7 text-sm">
             <a href="#how" className="text-ink-muted hover:text-ink transition-colors">작동 방식</a>
             <a href="#scenarios" className="text-ink-muted hover:text-ink transition-colors">시나리오</a>
-            <Link to="/leaderboard" className="text-ink-muted hover:text-ink transition-colors inline-flex items-center gap-1.5">
+            <Link to={user ? '/leaderboard' : '/login'} className="text-ink-muted hover:text-ink transition-colors inline-flex items-center gap-1.5">
               <Trophy className="w-3.5 h-3.5" aria-hidden="true" /> 리더보드
             </Link>
             <Link to="/docs" className="text-ink-muted hover:text-ink transition-colors inline-flex items-center gap-1.5">
@@ -108,9 +104,9 @@ export function Landing() {
             {user ? (
               <Link to="/" className="btn-primary text-sm py-2">콘솔로 이동 <ArrowRight className="w-4 h-4" aria-hidden="true" /></Link>
             ) : (
-              <button onClick={startLogin} className="btn-primary text-sm py-2">
+              <a href="/api/auth/github" className="btn-primary text-sm py-2">
                 <GithubMark className="w-4 h-4" /> GitHub로 시작
-              </button>
+              </a>
             )}
           </div>
         </div>
@@ -142,9 +138,9 @@ export function Landing() {
                 {user ? (
                   <Link to="/" className="btn-primary">문제 풀러 가기 <ArrowRight className="w-4 h-4" aria-hidden="true" /></Link>
                 ) : (
-                  <button onClick={startLogin} className="btn-primary">
+                  <a href="/api/auth/github" className="btn-primary">
                     <GithubMark className="w-4 h-4" /> GitHub로 시작하기
-                  </button>
+                  </a>
                 )}
                 <a href="#scenarios" className="btn-ghost">시나리오 둘러보기</a>
               </div>
@@ -348,9 +344,9 @@ export function Landing() {
               {user ? (
                 <Link to="/problems" className="btn-ghost">전체 카탈로그 열기 <ArrowRight className="w-4 h-4" aria-hidden="true" /></Link>
               ) : (
-                <button onClick={startLogin} className="btn-ghost">
+                <a href="/api/auth/github" className="btn-ghost">
                   <GithubMark className="w-4 h-4" /> 로그인하고 전체 카탈로그 보기
-                </button>
+                </a>
               )}
             </div>
           </Reveal>
@@ -396,9 +392,9 @@ export function Landing() {
               {user ? (
                 <Link to="/" className="btn-primary text-base px-8 py-3">콘솔로 이동 <ArrowRight className="w-4 h-4" aria-hidden="true" /></Link>
               ) : (
-                <button onClick={startLogin} className="btn-primary text-base px-8 py-3">
+                <a href="/api/auth/github" className="btn-primary text-base px-8 py-3">
                   <GithubMark className="w-5 h-5" /> GitHub로 시작하기
-                </button>
+                </a>
               )}
             </div>
           </Reveal>
@@ -415,7 +411,7 @@ export function Landing() {
           <p className="micro text-ink-faint">KUBERNETES TROUBLESHOOTING RANGE · K3S-IN-DOCKER · VERIFIED BY SCRIPTS</p>
           <div className="flex items-center gap-5 text-sm">
             <Link to="/docs" className="text-ink-faint hover:text-ink transition-colors">문서</Link>
-            <Link to="/leaderboard" className="text-ink-faint hover:text-ink transition-colors">리더보드</Link>
+            <Link to={user ? '/leaderboard' : '/login'} className="text-ink-faint hover:text-ink transition-colors">리더보드</Link>
           </div>
         </div>
       </footer>

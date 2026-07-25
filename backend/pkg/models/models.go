@@ -25,23 +25,39 @@ type Choice struct {
 	Text string `json:"text" yaml:"text"`
 }
 
+// DefaultBaseImage is the container image used when a problem specifies
+// neither image nor base_image.
+const DefaultBaseImage = "k3s-base:latest"
+
+// EffectiveImage resolves the container image for a problem session:
+// image > base_image > DefaultBaseImage (PROB-13).
+func (p *Problem) EffectiveImage() string {
+	if p.Image != "" {
+		return p.Image
+	}
+	if p.BaseImage != "" {
+		return p.BaseImage
+	}
+	return DefaultBaseImage
+}
+
 type Problem struct {
-	ID             string     `json:"id"`
-	Title          string     `json:"title"`
-	Description    string     `json:"description"`
-	Category       string     `json:"category"`
-	Difficulty     string     `json:"difficulty"`
-	Type           string     `json:"type"`
-	TimeoutMinutes int        `json:"timeout_minutes"`
-	VerifyType     string     `json:"verify_type"`
-	BaseImage      string     `json:"base_image,omitempty"`
-	Image          string     `json:"image,omitempty"`
-	Choices        []Choice   `json:"choices,omitempty"`
-	CorrectChoice  string     `json:"correct_choice,omitempty"`
-	Hint           string     `json:"hint,omitempty"`
-	GradingPrompt  string     `json:"grading_prompt,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID             string    `json:"id"`
+	Title          string    `json:"title"`
+	Description    string    `json:"description"`
+	Category       string    `json:"category"`
+	Difficulty     string    `json:"difficulty"`
+	Type           string    `json:"type"`
+	TimeoutMinutes int       `json:"timeout_minutes"`
+	VerifyType     string    `json:"verify_type"`
+	BaseImage      string    `json:"base_image,omitempty"`
+	Image          string    `json:"image,omitempty"`
+	Choices        []Choice  `json:"choices,omitempty"`
+	CorrectChoice  string    `json:"correct_choice,omitempty"`
+	Hint           string    `json:"hint,omitempty"`
+	GradingPrompt  string    `json:"grading_prompt,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type Attempt struct {

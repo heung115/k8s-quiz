@@ -167,3 +167,25 @@ func TestClientWriteJSONConcurrent(t *testing.T) {
 		readMsg(t, conn, 2*time.Second)
 	}
 }
+
+// WS-4: Broadcast reaches every connected client (server_restart notice on
+// graceful shutdown).
+func TestHubBroadcast(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+	srv := wsServer(t, hub)
+
+	conn1 := dial(t, srv, "u1")
+	conn2 := dial(t, srv, "u2")
+	waitForClient(t, hub, "u1")
+	waitForClient(t, hub, "u2")
+
+	hub.Broadcast(Message{Type: MsgSessionEnded, Reason: "server_restart"})
+
+	for user, conn := range map[string]*websocket.Conn{"u1": conn1, "u2": conn2} {
+		m := readMsg(t, conn, 2*time.Second)
+		if m.Type != MsgSessionEnded || m.Reason != "server_restart" {
+			t.Errorf("%s: expected session_ended/server_restart, got %+v", user, m)
+		}
+	}
+}

@@ -71,7 +71,7 @@ export function ProblemPage() {
   const [error, setError] = useState('')
   const [showHint, setShowHint] = useState(false)
   const [selectedChoice, setSelectedChoice] = useState('')
-  const { session, crashed, verifyResult, wsConnected, setSession, setCrashed, setVerifyResult, clear } = useSessionStore()
+  const { session, crashed, verifyResult, wsConnected, notice, setSession, setCrashed, setVerifyResult, clear } = useSessionStore()
 
   const remaining = useCountdown(session?.timeout_at, !!session)
   const isUrgent = remaining !== null && remaining <= 300
@@ -88,6 +88,12 @@ export function ProblemPage() {
     restoreSession()
     return () => clear()
   }, [id])
+
+  useEffect(() => {
+    // server_restart clears the session and sets a notice (Layout shows it);
+    // route back to the dashboard so the dead terminal isn't left mounted.
+    if (notice) navigate('/')
+  }, [notice, navigate])
 
   useEffect(() => {
     if (remaining === 0 && session) { clear(); navigate('/') }

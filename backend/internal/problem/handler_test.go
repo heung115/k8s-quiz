@@ -413,3 +413,40 @@ func TestAdminListKeepsAnswers(t *testing.T) {
 		t.Errorf("admin response must keep full model, got: %+v", body.Problems[0])
 	}
 }
+
+// SESS-3: the Start handler maps session sentinel errors to 429.
+func TestStartProblemCapacity429(t *testing.T) {
+	sess := &mockSession{startErr: session.ErrTooManySessions}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+
+	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 at capacity, got %d", w.Code)
+	}
+	var body map[string]string
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body["error"] != "server is at capacity; try again later" {
+		t.Errorf("unexpected error message: %q", body["error"])
+	}
+}
+
+func TestStartProblemCooldown429(t *testing.T) {
+	sess := &mockSession{startErr: session.ErrStartCooldown}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+
+	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 during cooldown, got %d", w.Code)
+	}
+	var body map[string]string
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body["error"] != "starting too fast; wait a few seconds and retry" {
+		t.Errorf("unexpected error message: %q", body["error"])
+	}
+}

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -121,6 +122,9 @@ func newTestService() (*Service, *mockContainerManager, *mockProblemStore) {
 	mgr := &mockContainerManager{execResult: container.ExecResult{ExitCode: 0, Stdout: "ok"}, running: true}
 	store := newMockProblemStore()
 	svc := NewService(mgr, store, &mockScriptProvider{})
+	// Tests start back-to-back; disable the SESS-3 cooldown unless a test
+	// re-enables it explicitly.
+	svc.SetStartCooldown(0)
 	return svc, mgr, store
 }
 
@@ -527,5 +531,136 @@ func TestGetCurrentSession(t *testing.T) {
 	}
 	if cur.SessionID == "" || cur.ProblemID != "p1" || cur.Status == "" || cur.TimeoutAt.IsZero() {
 		t.Errorf("incomplete snapshot: %+v", cur)
+	}
+}
+
+// SESS-3: global concurrency cap → ErrTooManySessions (own replacement exempt).
+func TestStartProblemCapacityLimit(t *testing.T) {
+	svc, _, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+	store.problems["p2"] = &models.Problem{ID: "p2", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+	svc.SetMaxConcurrentSessions(1)
+
+	if _, err := svc.StartProblem(context.Background(), "user-1", "p1"); err != nil {
+		t.Fatalf("first start failed: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Another user hits the cap.
+	if _, err := svc.StartProblem(context.Background(), "user-2", "p2"); !errors.Is(err, ErrTooManySessions) {
+		t.Errorf("expected ErrTooManySessions, got %v", err)
+	}
+
+	// The same user replacing their own session is allowed (total unchanged).
+	if _, err := svc.StartProblem(context.Background(), "user-1", "p2"); err != nil {
+		t.Errorf("own-session replacement must not hit the cap: %v", err)
+	}
+}
+
+// SESS-3: per-user start cooldown → ErrStartCooldown until it elapses.
+func TestStartProblemCooldown(t *testing.T) {
+	svc, _, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+	svc.SetStartCooldown(80 * time.Millisecond)
+
+	if _, err := svc.StartProblem(context.Background(), "user-1", "p1"); err != nil {
+		t.Fatalf("first start failed: %v", err)
+	}
+	if _, err := svc.StartProblem(context.Background(), "user-1", "p1"); !errors.Is(err, ErrStartCooldown) {
+		t.Errorf("expected ErrStartCooldown immediately after start, got %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if _, err := svc.StartProblem(context.Background(), "user-1", "p1"); err != nil {
+		t.Errorf("expected start to succeed after cooldown, got %v", err)
+	}
+}
+
+// WS-3: timeout_warning fires ONCE per session until reset.
+func TestTimeoutWarningOncePerSession(t *testing.T) {
+	svc, _, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+
+	var warns int
+	var warnMu sync.Mutex
+	svc.SetTimeoutWarningCallback(func(userID string, remaining int) {
+		warnMu.Lock()
+		warns++
+		warnMu.Unlock()
+	})
+
+	svc.StartProblem(context.Background(), "user-1", "p1")
+	time.Sleep(100 * time.Millisecond)
+
+	sess := svc.GetSession("user-1")
+	sess.mu.Lock()
+	sess.TimeoutAt = time.Now().Add(2 * time.Minute) // under 5min, still > 0
+	sess.mu.Unlock()
+
+	svc.checkTimeouts()
+	svc.checkTimeouts()
+	svc.checkTimeouts()
+
+	warnMu.Lock()
+	got := warns
+	warnMu.Unlock()
+	if got != 1 {
+		t.Fatalf("expected exactly 1 warning, got %d", got)
+	}
+
+	// Reset re-arms the warning for the new environment.
+	if err := svc.ResetEnvironment(context.Background(), "user-1"); err != nil {
+		t.Fatalf("reset failed: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	sess = svc.GetSession("user-1")
+	sess.mu.Lock()
+	sess.TimeoutAt = time.Now().Add(2 * time.Minute)
+	sess.mu.Unlock()
+
+	svc.checkTimeouts()
+	warnMu.Lock()
+	got = warns
+	warnMu.Unlock()
+	if got != 2 {
+		t.Errorf("expected warning re-armed after reset (2 total), got %d", got)
+	}
+}
+
+// WS-4: ResetEnvironment emits the reset event before new boot stages.
+func TestResetEmitsResetCallback(t *testing.T) {
+	svc, _, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+
+	var resetFor string
+	svc.SetResetCallback(func(userID string) { resetFor = userID })
+
+	svc.StartProblem(context.Background(), "user-1", "p1")
+	time.Sleep(50 * time.Millisecond)
+
+	if err := svc.ResetEnvironment(context.Background(), "user-1"); err != nil {
+		t.Fatalf("reset failed: %v", err)
+	}
+	if resetFor != "user-1" {
+		t.Errorf("expected reset callback for user-1, got %q", resetFor)
+	}
+	if svc.GetSession("user-1") == nil {
+		t.Error("session must stay active across reset")
+	}
+}
+
+// PROB-13: the session service resolves images via EffectiveImage.
+func TestStartProblemUsesEffectiveImage(t *testing.T) {
+	svc, mgr, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, Image: "custom:v2", BaseImage: "k3s-base:latest", VerifyType: "script"}
+
+	if _, err := svc.StartProblem(context.Background(), "user-1", "p1"); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.created) != 1 || mgr.created[0].Image != "custom:v2" {
+		t.Errorf("expected image>base_image precedence, got %+v", mgr.created)
 	}
 }

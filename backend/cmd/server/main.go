@@ -19,6 +19,7 @@ import (
 	"github.com/k8s-quiz/backend/internal/user"
 	"github.com/k8s-quiz/backend/internal/ws"
 	"github.com/k8s-quiz/backend/pkg/config"
+	"github.com/k8s-quiz/backend/pkg/dbmigrate"
 	"github.com/k8s-quiz/backend/pkg/llm"
 	"github.com/k8s-quiz/backend/pkg/middleware"
 )
@@ -40,6 +41,11 @@ func main() {
 		log.Fatalf("failed to ping database: %v", err)
 	}
 
+	// INFRA-4: apply embedded migrations at boot (no-op when current).
+	if err := dbmigrate.Up(cfg.DatabaseURL); err != nil {
+		log.Fatalf("failed to apply migrations: %v", err)
+	}
+
 	dockerMgr, err := container.NewDockerManager(cfg.DockerHost)
 	if err != nil {
 		log.Fatalf("failed to create docker manager: %v", err)
@@ -51,6 +57,7 @@ func main() {
 
 	authService := auth.NewService(cfg, db, userRepo)
 	sessionSvc := session.NewService(dockerMgr, problemRepo, problemLoader)
+	sessionSvc.SetMaxConcurrentSessions(cfg.MaxConcurrentSessions)
 
 	hub := ws.NewHub()
 	go hub.Run()
@@ -85,6 +92,12 @@ func main() {
 		hub.SendToUser(userID, ws.Message{
 			Type:   ws.MsgSessionEnded,
 			Reason: "container_crashed",
+		})
+	})
+	sessionSvc.SetResetCallback(func(userID string) {
+		hub.SendToUser(userID, ws.Message{
+			Type:   ws.MsgSessionEnded,
+			Reason: "reset",
 		})
 	})
 	sessionSvc.SetGrader(llm.NewClient(cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMBaseURL))
@@ -169,6 +182,10 @@ func main() {
 	<-quit
 
 	log.Println("shutting down...")
+	// WS-4: best-effort notice to connected clients, then a short bounded
+	// flush wait so the frames actually leave before containers are removed.
+	hub.Broadcast(ws.Message{Type: ws.MsgSessionEnded, Reason: "server_restart"})
+	time.Sleep(250 * time.Millisecond)
 	sessionSvc.CleanupAll(context.Background())
 	if warmPool != nil {
 		warmPool.Drain(context.Background())

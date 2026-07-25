@@ -1,7 +1,7 @@
 id: pod-crashloop
-title: "CrashLoopBackOff 해결"
+title: "Pod 생성 실패 (ConfigMap 키 오류)"
 description: |
-  web-app Pod이 CrashLoopBackOff 상태입니다.
+  web-app Pod이 정상적으로 생성되지 못하고 CreateContainerConfigError 상태에 빠져 있습니다.
   원인을 파악하고 Pod이 정상적으로 Running 상태가 되도록 수정하세요.
   
   힌트: kubectl describe pod 명령어로 이벤트를 확인해보세요.

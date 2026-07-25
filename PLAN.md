@@ -12,7 +12,7 @@
 | State | Zustand |
 | Terminal | xterm.js |
 | DB | PostgreSQL |
-| Auth | GitHub OAuth → JWT (Access 15m + Refresh 7d) |
+| Auth | GitHub OAuth → JWT (Access 15m + Refresh 7d) via httpOnly cookies |
 | API | REST + WebSocket |
 | Infra | Docker Compose, Docker Socket mount |
 | K8s | k3s-in-Docker (user-per-container) |
@@ -90,16 +90,28 @@ correct_choice: c      # only for verify_type: choice
 - k3s-base image: `rancher/k3s` + kubectl + common tools pre-installed
 
 ### Auth
-- GitHub OAuth → JWT Access(15min) + Refresh(7d)
-- Roles: `admin` (problem CRUD, user mgmt, progress view), `user` (solve problems)
-- WebSocket auth: first message after connection carries JWT
-- Libraries: `golang-jwt/jwt`, `markbates/goth` or manual OAuth2
+- GitHub OAuth → JWT Access(15min) + Refresh(7d), delivered as **httpOnly cookies**
+  (`access_token` Path=/, `refresh_token` Path=/api/auth; SameSite=Lax, Secure on
+  https). `Authorization: Bearer` remains accepted for scripts/tooling.
+- OAuth callback sets the cookies and redirects to the frontend (no tokens in URL).
+- Refresh rotation with token families: reuse of a used refresh token revokes the
+  whole family (replay detection).
+- `POST /api/auth/dev-login` (local dev only): exchanges a validly-signed access
+  JWT for cookies, preserving the dev-admin browser flow without an auth bypass.
+- Roles: `admin` (problem CRUD, user mgmt, progress view), `user` (solve problems);
+  demoting the last admin is rejected.
+- WebSocket auth: the httpOnly cookie authenticates the upgrade (browsers); the
+  legacy first-message JWT remains a fallback for non-browser clients.
+- Migrations: embedded in the backend and applied at boot (golang-migrate);
+  first-boot compose seeding via `docker/db-init/`.
+- Libraries: `golang-jwt/jwt`, `golang-migrate/migrate`, manual OAuth2
 
 ### API Design (REST + WebSocket)
 
 ```
 POST   /api/auth/github          # initiate OAuth
-GET    /api/auth/github/callback # OAuth callback → returns tokens
+GET    /api/auth/github/callback # OAuth callback → sets httpOnly cookies, redirects
+POST   /api/auth/dev-login       # local dev only: signed JWT → cookies
 POST   /api/auth/refresh         # refresh access token
 GET    /api/auth/me              # current user info
 
@@ -127,12 +139,13 @@ PUT    /api/admin/users/:id/role # change role
 GET    /api/admin/attempts       # all attempts (filter by user/problem)
 
 # WebSocket
-WS     /ws/terminal              # terminal session (auth via first message)
+WS     /ws/terminal              # terminal session (cookie auth at upgrade; first-message JWT fallback)
 ```
 
 WebSocket message protocol:
 ```json
-// Client → Server (auth)
+// Client → Server (auth — optional when the upgrade request already carries
+// the httpOnly access_token cookie; required for non-browser clients)
 {"type": "auth", "token": "jwt..."}
 
 // Client → Server (terminal input)
@@ -210,13 +223,16 @@ CREATE TABLE refresh_tokens (
     user_id UUID NOT NULL REFERENCES users(id),
     token_hash VARCHAR(255) NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    family_id UUID NOT NULL DEFAULT gen_random_uuid(),  -- 004: rotation family
+    used BOOLEAN NOT NULL DEFAULT false                 -- 004: reuse detection
 );
 
 CREATE INDEX idx_attempts_user ON attempts(user_id);
 CREATE INDEX idx_attempts_problem ON attempts(problem_id);
 CREATE INDEX idx_attempts_status ON attempts(status);
 CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX idx_refresh_tokens_family ON refresh_tokens(family_id);
 ```
 
 ### Frontend Pages
@@ -356,12 +372,23 @@ services:
       - POSTGRES_DB=k8squiz
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./backend/migrations:/migrations:ro
+      - ./docker/db-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U k8squiz"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  # Image builder (profile "image", exits immediately):
+  #   docker compose --profile image up --build k3s-base
+  k3s-base:
+    image: k3s-base:latest
+    build: ./docker/k3s-base
+    profiles: ["image"]
+    entrypoint: ["true"]
+    restart: "no"
 
 volumes:
   pgdata:
@@ -379,6 +406,7 @@ PROBLEMS_REPO_PATH=./problems
 FRONTEND_URL=http://localhost:5173
 DOCKER_HOST=unix:///var/run/docker.sock
 SERVER_PORT=8080
+MAX_CONCURRENT_SESSIONS=0   # 0 = unlimited; global cap on active problem sessions (429 above)
 ```
 
 ## Implementation Order

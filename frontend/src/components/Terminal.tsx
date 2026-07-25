@@ -3,9 +3,9 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { useAuthStore } from '../stores/auth'
 import { useSessionStore } from '../stores/session'
 import { useThemeStore } from '../stores/theme'
+import { refreshAuth } from '../api/client'
 import { WSMessage } from '../types'
 
 function readTermTheme() {
@@ -21,7 +21,11 @@ function readTermTheme() {
 }
 
 // Reconnect policy: exponential backoff 1s→2s→4s (capped), at most this many
-// attempts per close cycle; the counter resets once a socket opens again.
+// failed attempts per close cycle. A connection that streams terminal output is
+// healthy and resets the counter; a connection that closes without ever
+// producing output (e.g. an expired access cookie the server can only reject
+// after the upgrade) counts as a failed attempt instead of resetting it, so an
+// idle page with a dead cookie can't loop forever.
 const MAX_RECONNECT_ATTEMPTS = 5
 const MAX_BACKOFF_MS = 4000
 
@@ -30,8 +34,9 @@ export function Terminal() {
   const xtermRef = useRef<XTerm | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  const retryRef = useRef<() => void>(() => {})
   const [reconnecting, setReconnecting] = useState(false)
-  const { accessToken } = useAuthStore()
+  const [failed, setFailed] = useState(false)
   const { setWsConnected, handleWSMessage } = useSessionStore()
   const theme = useThemeStore((s) => s.theme)
 
@@ -67,19 +72,18 @@ export function Terminal() {
     let disposed = false
     let reconnectTimer: number | undefined
     let attempts = 0
+    let gotOutput = false
 
     const connect = () => {
       if (disposed) return
+      gotOutput = false
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
       ws.onopen = () => {
         if (disposed) { ws.close(); return }
-        // Healthy open: reset the backoff counter for the next close cycle.
-        attempts = 0
         setReconnecting(false)
-        const authMsg: WSMessage = { type: 'auth', token: accessToken || '' }
-        ws.send(JSON.stringify(authMsg))
+        // httpOnly cookies authenticate the upgrade; no auth message needed.
         setWsConnected(true)
         term.writeln('\r\n\x1b[32mConnecting to terminal...\x1b[0m\r\n')
       }
@@ -89,6 +93,13 @@ export function Terminal() {
           const msg: WSMessage = JSON.parse(event.data)
           switch (msg.type) {
             case 'output':
+              // First real output proves an authenticated, attached shell:
+              // treat the connection as healthy and reset the backoff counter.
+              if (!gotOutput) {
+                gotOutput = true
+                attempts = 0
+                setFailed(false)
+              }
               term.write(msg.data || '')
               break
             case 'stage':
@@ -115,7 +126,7 @@ export function Terminal() {
         } catch {}
       }
 
-      ws.onclose = () => {
+      ws.onclose = async () => {
         if (disposed) return
         setWsConnected(false)
         // Stop retrying once the session is clearly over: a non-crash
@@ -129,11 +140,19 @@ export function Terminal() {
         }
         if (attempts >= MAX_RECONNECT_ATTEMPTS) {
           setReconnecting(false)
-          term.writeln('\r\n\x1b[31mDisconnected from terminal. Reload to reconnect.\x1b[0m\r\n')
+          setFailed(true)
+          term.writeln('\r\n\x1b[31mTerminal connection failed. Please sign in again.\x1b[0m\r\n')
           return
         }
+        // A no-output close is the signature of a stale access cookie: refresh
+        // it (single-flight, shared with the REST client) before re-attaching.
+        if (!gotOutput) {
+          await refreshAuth()
+          if (disposed) return
+        }
         // Unexpected close mid-session (e.g. reset swapped the container):
-        // re-attach with the same session via the auth handshake, with backoff.
+        // re-attach with the same session — httpOnly cookies ride the new
+        // upgrade, no auth handshake — with exponential backoff.
         const delay = Math.min(1000 * 2 ** attempts, MAX_BACKOFF_MS)
         attempts += 1
         setReconnecting(true)
@@ -143,6 +162,14 @@ export function Terminal() {
       ws.onerror = () => {
         term.writeln('\r\n\x1b[31mWebSocket error.\x1b[0m\r\n')
       }
+    }
+
+    retryRef.current = () => {
+      if (disposed) return
+      attempts = 0
+      setFailed(false)
+      setReconnecting(true)
+      connect()
     }
 
     connect()
@@ -171,7 +198,7 @@ export function Terminal() {
       wsRef.current?.close()
       term.dispose()
     }
-  }, [accessToken])
+  }, [])
 
   return (
     <div className="relative h-full w-full">
@@ -179,6 +206,20 @@ export function Terminal() {
       {reconnecting && (
         <div className="pointer-events-none absolute right-2 top-2 inline-flex items-center gap-1.5 border border-warning/40 bg-surface/90 px-2 py-1 micro text-warning motion-safe:animate-pulse" role="status">
           재연결 중…
+        </div>
+      )}
+      {failed && (
+        <div className="absolute inset-0 flex items-center justify-center bg-terminal/80 px-4" role="alert">
+          <div className="w-full max-w-xs border border-danger/40 bg-surface px-5 py-4 text-center">
+            <p className="font-display font-semibold text-sm text-danger">터미널 연결 실패</p>
+            <p className="micro text-ink-faint mt-1.5">세션이 만료되었을 수 있습니다. 다시 로그인하세요.</p>
+            <button
+              onClick={() => retryRef.current()}
+              className="mt-4 inline-flex items-center justify-center gap-1.5 border border-edge bg-surface-2 hover:bg-surface-3 px-3 py-1.5 text-sm transition-colors"
+            >
+              다시 시도
+            </button>
+          </div>
         </div>
       )}
     </div>

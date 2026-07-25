@@ -6,6 +6,7 @@ export interface User {
   avatar_url: string
   role: 'admin' | 'user'
   created_at: string
+  updated_at: string
 }
 
 export interface Choice {

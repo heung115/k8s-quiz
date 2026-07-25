@@ -20,8 +20,8 @@
 cp .env.example .env
 # .env 파일에서 GitHub OAuth Client ID/Secret 설정
 
-# 2. k3s-base 이미지 빌드
-docker build -t k3s-base:latest docker/k3s-base/
+# 2. k3s-base 이미지 빌드 (문제 환경에 필요)
+make image   # 또는: docker compose --profile image up --build k3s-base
 
 # 3. 전체 스택 실행
 docker compose up --build
@@ -274,6 +274,7 @@ exit 1
 | `FRONTEND_URL` | `http://localhost:5173` | CORS 허용 프론트엔드 URL |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker 소켓 경로 |
 | `SERVER_PORT` | `8080` | 백엔드 서버 포트 |
+| `MAX_CONCURRENT_SESSIONS` | `0` | 전역 활성 세션(컨테이너) 상한. 0=무제한, 초과 시 `/start`가 429 |
 | `LLM_API_KEY` | (비어있음) | LLM 채점용 API 키 (text grading, 선택) |
 | `LLM_MODEL` | `gpt-4o-mini` | LLM 모델 |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI 호환 API 엔드포인트 |

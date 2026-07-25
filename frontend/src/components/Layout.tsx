@@ -1,10 +1,13 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
+import { useSessionStore } from '../stores/session'
 import { BookOpen, Shield, LogOut, Trophy, ListChecks } from 'lucide-react'
 import { ThemeToggle } from './ThemeToggle'
 
 export function Layout({ children }: { children?: React.ReactNode }) {
   const { user, logout } = useAuthStore()
+  const notice = useSessionStore((s) => s.notice)
+  const setNotice = useSessionStore((s) => s.setNotice)
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -70,6 +73,12 @@ export function Layout({ children }: { children?: React.ReactNode }) {
           </div>
         </div>
       </header>
+      {notice && (
+        <div className="border-b border-warning/40 bg-warning-soft px-5 py-2.5 flex items-center justify-center sm:justify-between gap-3 text-sm text-warning" role="status">
+          <span className="text-center">{notice}</span>
+          <button onClick={() => setNotice(null)} className="micro shrink-0 text-warning/80 hover:text-warning transition-colors" aria-label="알림 닫기">닫기</button>
+        </div>
+      )}
       <main className="flex-1">{children ?? <Outlet />}</main>
     </div>
   )

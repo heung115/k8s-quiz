@@ -3,13 +3,23 @@ package auth
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
-	"net/url"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/k8s-quiz/backend/pkg/middleware"
+)
+
+// Cookie names/paths are a frozen contract with the frontend (FRONT-3):
+//   - access_token:  Path=/,          Max-Age=900    (15 min, matches JWT exp)
+//   - refresh_token: Path=/api/auth,  Max-Age=604800 (7 days)
+//
+// Both are HttpOnly + SameSite=Lax; Secure iff FRONTEND_URL is https.
+const (
+	AccessTokenCookie  = "access_token"
+	RefreshTokenCookie = "refresh_token"
+
+	accessTokenMaxAge  = 900
+	refreshTokenMaxAge = 7 * 24 * 60 * 60
 )
 
 type Handler struct {
@@ -27,13 +37,14 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	auth.POST("/refresh", h.Refresh)
 	auth.POST("/logout", h.Logout)
 	auth.DELETE("/logout", h.Logout)
+	auth.POST("/dev-login", h.DevLogin)
 	auth.GET("/me", middleware.Auth(h.service), h.Me)
 }
 
-// cookieSecure is true when the frontend is served over https, so the
-// oauth_state cookie gets the Secure flag in production.
+// cookieSecure is true when the frontend is served over https, so auth
+// cookies get the Secure flag in production.
 func (h *Handler) cookieSecure() bool {
-	return strings.HasPrefix(h.service.cfg.FrontendURL, "https://")
+	return h.service.cfg.CookieSecure()
 }
 
 func (h *Handler) setStateCookie(c *gin.Context, value string, maxAge int) {
@@ -41,6 +52,23 @@ func (h *Handler) setStateCookie(c *gin.Context, value string, maxAge int) {
 	// POSTs (CSRF); Secure is set when the frontend is https.
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("oauth_state", value, maxAge, "/", "", h.cookieSecure(), true)
+}
+
+// setTokenCookies writes the access + refresh httpOnly cookies per the
+// frozen FRONT-3 contract.
+func (h *Handler) setTokenCookies(c *gin.Context, accessToken, refreshToken string) {
+	secure := h.cookieSecure()
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(AccessTokenCookie, accessToken, accessTokenMaxAge, "/", "", secure, true)
+	c.SetCookie(RefreshTokenCookie, refreshToken, refreshTokenMaxAge, "/api/auth", "", secure, true)
+}
+
+// clearTokenCookies expires both auth cookies (logout / refresh failure).
+func (h *Handler) clearTokenCookies(c *gin.Context) {
+	secure := h.cookieSecure()
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(AccessTokenCookie, "", -1, "/", "", secure, true)
+	c.SetCookie(RefreshTokenCookie, "", -1, "/api/auth", "", secure, true)
 }
 
 func (h *Handler) GithubLogin(c *gin.Context) {
@@ -65,62 +93,83 @@ func (h *Handler) GithubCallback(c *gin.Context) {
 		return
 	}
 
-	accessToken, refreshToken, u, err := h.service.HandleCallback(c.Request.Context(), code)
+	accessToken, refreshToken, _, err := h.service.HandleCallback(c.Request.Context(), code)
 	if err != nil {
 		c.Redirect(http.StatusTemporaryRedirect, frontend+"/login?error=auth_failed")
 		return
 	}
 
+	// Tokens travel ONLY in httpOnly cookies (FRONT-3) — never in the URL.
+	// The SPA detects success via the #callback=1 fragment and calls /me.
 	h.setStateCookie(c, "", -1)
-
-	userJSON, err := json.Marshal(u)
-	if err != nil {
-		c.Redirect(http.StatusTemporaryRedirect, frontend+"/login?error=auth_failed")
-		return
-	}
-
-	q := url.Values{}
-	q.Set("access_token", accessToken)
-	q.Set("refresh_token", refreshToken)
-	q.Set("user", url.QueryEscape(string(userJSON)))
-
-	// Tokens go in the URL FRAGMENT, not the query string. The fragment is
-	// never sent to the server, so it does not land in nginx/proxy access
-	// logs, and it is not leaked via the Referer header. The SPA reads it
-	// from location.hash. (Long-term: migrate to httpOnly cookies.)
-	c.Redirect(http.StatusTemporaryRedirect, frontend+"/login#"+q.Encode())
+	h.setTokenCookies(c, accessToken, refreshToken)
+	c.Redirect(http.StatusFound, frontend+"/login#callback=1")
 }
 
+// Refresh reads the refresh_token cookie, rotates it (AUTH-5: old token
+// marked used, new token in the same family) and responds 200 {user} with
+// fresh cookies. Any failure → 401 + cleared cookies so the SPA resets.
 func (h *Handler) Refresh(c *gin.Context) {
-	var req struct {
-		RefreshToken string `json:"refresh_token" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "refresh_token required"})
-		return
-	}
-
-	accessToken, refreshToken, err := h.service.RefreshAccessToken(c.Request.Context(), req.RefreshToken)
-	if err != nil {
+	refreshToken, err := c.Cookie(RefreshTokenCookie)
+	if err != nil || refreshToken == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
-	})
+	accessToken, newRefresh, u, err := h.service.RefreshAccessToken(c.Request.Context(), refreshToken)
+	if err != nil {
+		h.clearTokenCookies(c)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+		return
+	}
+
+	h.setTokenCookies(c, accessToken, newRefresh)
+	c.JSON(http.StatusOK, u)
 }
 
-// Logout revokes the caller's refresh token server-side so it cannot be
-// reused after the client clears its local storage.
+// Logout revokes the caller's refresh-token family server-side and clears
+// both cookies → 204.
 func (h *Handler) Logout(c *gin.Context) {
-	var req struct {
-		RefreshToken string `json:"refresh_token"`
+	if refreshToken, err := c.Cookie(RefreshTokenCookie); err == nil {
+		h.service.RevokeRefresh(c.Request.Context(), refreshToken)
 	}
-	_ = c.ShouldBindJSON(&req)
-	h.service.RevokeRefresh(c.Request.Context(), req.RefreshToken)
+	h.clearTokenCookies(c)
 	c.Status(http.StatusNoContent)
+}
+
+// DevLogin is a LOCAL-DEV-ONLY endpoint (enabled iff FRONTEND_URL is local)
+// that converts a validly-signed access JWT (e.g. minted by an admin script)
+// into the cookie session the browser flow uses. It is not an auth bypass:
+// the token must pass normal signature/expiry validation.
+func (h *Handler) DevLogin(c *gin.Context) {
+	if !h.service.cfg.IsLocal() {
+		// Do not reveal the endpoint exists outside local dev.
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+
+	var req struct {
+		Token string `json:"token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
+		return
+	}
+
+	u, err := h.service.ValidateAccessToken(req.Token)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		return
+	}
+
+	accessToken, refreshToken, err := h.service.IssueTokens(c.Request.Context(), u)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue tokens"})
+		return
+	}
+
+	h.setTokenCookies(c, accessToken, refreshToken)
+	c.JSON(http.StatusOK, u)
 }
 
 func (h *Handler) Me(c *gin.Context) {
