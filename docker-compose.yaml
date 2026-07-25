@@ -28,6 +28,8 @@ services:
       # network, so enabling this relaxes per-session network isolation.
       - POOL_SIZE=${POOL_SIZE:-0}
       - POOL_IMAGE=${POOL_IMAGE:-k3s-base:latest}
+      # Global cap on active problem sessions; 0 = unlimited (429 above cap).
+      - MAX_CONCURRENT_SESSIONS=${MAX_CONCURRENT_SESSIONS:-0}
     depends_on:
       db:
         condition: service_healthy
@@ -42,23 +44,33 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     environment:
       - POSTGRES_USER=k8squiz
       - POSTGRES_PASSWORD=k8squiz
       - POSTGRES_DB=k8squiz
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # First-boot schema seed only (initdb.d runs on empty volume). The
-      # .down.sql files are IF EXISTS no-ops, so mounting the dir is safe;
-      # runtime migrations are applied by the migrate CLI (see README).
-      - ./backend/migrations:/docker-entrypoint-initdb.d
+      # First-boot schema load: 00-load-migrations.sh applies *.up.sql from
+      # /migrations in order (initdb phase only, i.e. empty volume). Runtime
+      # upgrades are applied by the backend's embedded migration runner.
+      - ./backend/migrations:/migrations:ro
+      - ./docker/db-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U k8squiz"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  # Builds the k3s-base problem image and exits (not a long-running service):
+  #   docker compose --profile image up --build k3s-base   (or: make image)
+  k3s-base:
+    image: k3s-base:latest
+    build: ./docker/k3s-base
+    profiles: ["image"]
+    entrypoint: ["true"]
+    restart: "no"
 
 volumes:
   pgdata:

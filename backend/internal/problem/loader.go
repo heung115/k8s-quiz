@@ -3,6 +3,7 @@ package problem
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +87,14 @@ func (l *GitLoader) LoadAll(ctx context.Context) ([]models.Problem, error) {
 			p.TimeoutMinutes = 30
 		}
 		if p.BaseImage == "" && p.Image == "" {
-			p.BaseImage = "k3s-base:latest"
+			p.BaseImage = models.DefaultBaseImage
+		}
+
+		// PROB-12: skip invalid problems (bad id/enums/choice rules) with a
+		// server log; the valid subset still loads.
+		if msg := validateLoadedProblem(&p); msg != "" {
+			log.Printf("skipping invalid problem %q: %s", entry.Name(), msg)
+			continue
 		}
 
 		if hintPath, err := l.safeJoin(entry.Name(), "hint.md"); err == nil {
@@ -149,4 +157,28 @@ func (l *GitLoader) GetVerifyScript(problemID string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// validateLoadedProblem enforces the id format, enum values, and choice
+// rules on a problem parsed from YAML (PROB-12). It returns "" when valid.
+func validateLoadedProblem(p *models.Problem) string {
+	if msg := validateProblem(p); msg != "" {
+		return msg
+	}
+	if p.VerifyType == "choice" {
+		if len(p.Choices) < 2 {
+			return "choice problem needs at least 2 choices"
+		}
+		found := false
+		for _, ch := range p.Choices {
+			if ch.ID == p.CorrectChoice {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "correct_choice must reference one of the choices"
+		}
+	}
+	return ""
 }

@@ -82,6 +82,14 @@ func (r *Repository) List(ctx context.Context) ([]models.User, error) {
 	return users, nil
 }
 
+// CountAdmins returns the number of users with the admin role (AUTHZ-2
+// last-admin guard).
+func (r *Repository) CountAdmins(ctx context.Context) (int, error) {
+	var count int
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin'`).Scan(&count)
+	return count, err
+}
+
 func (r *Repository) UpdateRole(ctx context.Context, id string, role models.Role) error {
 	_, err := r.db.Exec(ctx, `UPDATE users SET role=$1, updated_at=NOW() WHERE id=$2`, role, id)
 	return err

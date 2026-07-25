@@ -16,6 +16,8 @@ type ProblemRepo interface {
 
 type UserRepo interface {
 	List(ctx context.Context) ([]models.User, error)
+	FindByID(ctx context.Context, id string) (*models.User, error)
+	CountAdmins(ctx context.Context) (int, error)
 	UpdateRole(ctx context.Context, id string, role models.Role) error
 	Leaderboard(ctx context.Context, limit int) ([]models.LeaderboardEntry, error)
 }
@@ -105,6 +107,25 @@ func (h *Handler) UpdateRole(c *gin.Context) {
 	if req.Role != "admin" && req.Role != "user" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "role must be admin or user"})
 		return
+	}
+	// AUTHZ-2: never allow demoting the last admin.
+	if req.Role == "user" {
+		target, err := h.repo.FindByID(c.Request.Context(), id)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		if target.Role == models.RoleAdmin {
+			admins, err := h.repo.CountAdmins(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update role"})
+				return
+			}
+			if admins <= 1 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "cannot demote the last admin"})
+				return
+			}
+		}
 	}
 	if err := h.repo.UpdateRole(c.Request.Context(), id, models.Role(req.Role)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update role"})

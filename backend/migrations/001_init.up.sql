@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     github_id BIGINT UNIQUE NOT NULL,
     username VARCHAR(255) NOT NULL,
@@ -11,7 +11,7 @@ CREATE TABLE users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE problems (
+CREATE TABLE IF NOT EXISTS problems (
     id VARCHAR(255) PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
@@ -29,7 +29,7 @@ CREATE TABLE problems (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE attempts (
+CREATE TABLE IF NOT EXISTS attempts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     problem_id VARCHAR(255) NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
@@ -42,7 +42,7 @@ CREATE TABLE attempts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE refresh_tokens (
+CREATE TABLE IF NOT EXISTS refresh_tokens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash VARCHAR(255) NOT NULL,
@@ -50,8 +50,8 @@ CREATE TABLE refresh_tokens (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_attempts_user ON attempts(user_id);
-CREATE INDEX idx_attempts_problem ON attempts(problem_id);
-CREATE INDEX idx_attempts_status ON attempts(status);
-CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
-CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_attempts_user ON attempts(user_id);
+CREATE INDEX IF NOT EXISTS idx_attempts_problem ON attempts(problem_id);
+CREATE INDEX IF NOT EXISTS idx_attempts_status ON attempts(status);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);

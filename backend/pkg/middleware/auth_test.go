@@ -109,3 +109,48 @@ func TestAdminOnly_RegularUser(t *testing.T) {
 		t.Errorf("expected 403, got %d", w.Code)
 	}
 }
+
+// FRONT-3: the middleware accepts the access_token httpOnly cookie as an
+// alternative to the Bearer header.
+func TestAuthMiddleware_CookieToken(t *testing.T) {
+	validator := &mockValidator{user: &models.User{ID: "u1", Username: "cookie-user", Role: models.RoleUser}}
+	r := setupRouter(validator)
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.AddCookie(&http.Cookie{Name: AccessTokenCookie, Value: "cookie-token"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 via cookie auth, got %d", w.Code)
+	}
+}
+
+func TestAuthMiddleware_InvalidCookieToken(t *testing.T) {
+	validator := &mockValidator{err: errors.New("invalid token")}
+	r := setupRouter(validator)
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.AddCookie(&http.Cookie{Name: AccessTokenCookie, Value: "bad"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for invalid cookie token, got %d", w.Code)
+	}
+}
+
+func TestAuthMiddleware_BearerPreferredOverCookie(t *testing.T) {
+	validator := &mockValidator{user: &models.User{ID: "u1", Username: "bearer-user", Role: models.RoleUser}}
+	r := setupRouter(validator)
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("Authorization", "Bearer header-token")
+	req.AddCookie(&http.Cookie{Name: AccessTokenCookie, Value: "cookie-token"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}

@@ -19,6 +19,7 @@ type mockUserRepo struct {
 	leaderboard []models.LeaderboardEntry
 	roles       map[string]models.Role
 	listErr     error
+	adminCount  int
 }
 
 func (m *mockUserRepo) List(ctx context.Context) ([]models.User, error) {
@@ -26,6 +27,19 @@ func (m *mockUserRepo) List(ctx context.Context) ([]models.User, error) {
 		return nil, m.listErr
 	}
 	return m.users, nil
+}
+
+func (m *mockUserRepo) FindByID(ctx context.Context, id string) (*models.User, error) {
+	for i := range m.users {
+		if m.users[i].ID == id {
+			return &m.users[i], nil
+		}
+	}
+	return nil, errors.New("not found")
+}
+
+func (m *mockUserRepo) CountAdmins(ctx context.Context) (int, error) {
+	return m.adminCount, nil
 }
 
 func (m *mockUserRepo) UpdateRole(ctx context.Context, id string, role models.Role) error {
@@ -221,5 +235,80 @@ func TestProgressRepoError(t *testing.T) {
 	w := do(r, "GET", "/api/users/me/progress", "")
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", w.Code)
+	}
+}
+
+// AUTHZ-2: demoting the last admin must fail with 400.
+func TestUpdateRoleLastAdminRejected(t *testing.T) {
+	ur := &mockUserRepo{
+		users:      []models.User{{ID: "u1", Username: "alice", Role: models.RoleAdmin}},
+		adminCount: 1,
+	}
+	r := setupRouter(ur, &mockProblemRepo{})
+
+	req := httptest.NewRequest("PUT", "/api/admin/users/u1/role", strings.NewReader(`{"role":"user"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 demoting last admin, got %d", w.Code)
+	}
+	if ur.roles["u1"] == models.RoleUser {
+		t.Error("role must not be changed when rejecting last-admin demotion")
+	}
+}
+
+func TestUpdateRoleSecondAdminAllowed(t *testing.T) {
+	ur := &mockUserRepo{
+		users: []models.User{
+			{ID: "u1", Username: "alice", Role: models.RoleAdmin},
+			{ID: "u2", Username: "bob", Role: models.RoleAdmin},
+		},
+		adminCount: 2,
+	}
+	r := setupRouter(ur, &mockProblemRepo{})
+
+	req := httptest.NewRequest("PUT", "/api/admin/users/u1/role", strings.NewReader(`{"role":"user"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with two admins, got %d", w.Code)
+	}
+	if ur.roles["u1"] != models.RoleUser {
+		t.Error("expected role updated to user")
+	}
+}
+
+func TestUpdateRoleDemoteRegularUserAllowed(t *testing.T) {
+	ur := &mockUserRepo{
+		users:      []models.User{{ID: "u3", Username: "carol", Role: models.RoleUser}},
+		adminCount: 1,
+	}
+	r := setupRouter(ur, &mockProblemRepo{})
+
+	req := httptest.NewRequest("PUT", "/api/admin/users/u3/role", strings.NewReader(`{"role":"user"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 demoting a non-admin, got %d", w.Code)
+	}
+}
+
+func TestUpdateRoleUnknownUser(t *testing.T) {
+	ur := &mockUserRepo{adminCount: 1}
+	r := setupRouter(ur, &mockProblemRepo{})
+
+	req := httptest.NewRequest("PUT", "/api/admin/users/ghost/role", strings.NewReader(`{"role":"user"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown user, got %d", w.Code)
 	}
 }

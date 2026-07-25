@@ -23,20 +23,28 @@ function SuspenseWrap({ children }: { children: React.ReactNode }) {
   )
 }
 
+function Booting() {
+  return <div className="min-h-[60vh] flex items-center justify-center font-mono text-[10px] text-ink-faint">loading…</div>
+}
+
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user } = useAuthStore()
+  const { user, bootstrapped } = useAuthStore()
+  // While GET /api/auth/me is in flight, hold the guard so a hard refresh on a
+  // protected route doesn't flash /login before the cookie session resolves.
+  if (!bootstrapped) return <Booting />
   if (!user) return <Navigate to="/login" replace />
   return <>{children}</>
 }
 
 function Root() {
-  const { user } = useAuthStore()
+  const { user, bootstrapped } = useAuthStore()
+  if (!bootstrapped) return <Booting />
   return user ? <Layout><Dashboard /></Layout> : <Landing />
 }
 
 export default function App() {
-  const { loadFromStorage } = useAuthStore()
-  useEffect(() => { loadFromStorage() }, [])
+  const { bootstrap } = useAuthStore()
+  useEffect(() => { bootstrap() }, [bootstrap])
 
   return (
     <ErrorBoundary>

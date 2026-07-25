@@ -2,6 +2,7 @@ package problem
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"regexp"
@@ -107,6 +108,16 @@ func sanitizeProblem(p models.Problem) models.Problem {
 func (h *Handler) Start(c *gin.Context) {
 	u := middleware.GetUser(c)
 	if _, err := h.sessionSvc.StartProblem(c.Request.Context(), u.ID, c.Param("id")); err != nil {
+		switch {
+		case errors.Is(err, session.ErrTooManySessions):
+			// SESS-3: global concurrency cap reached.
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "server is at capacity; try again later"})
+			return
+		case errors.Is(err, session.ErrStartCooldown):
+			// SESS-3: per-user start throttle.
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "starting too fast; wait a few seconds and retry"})
+			return
+		}
 		log.Printf("start problem %s for %s failed: %v", c.Param("id"), u.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start environment"})
 		return

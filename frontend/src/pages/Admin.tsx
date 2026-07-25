@@ -25,6 +25,7 @@ export function Admin() {
   const [users, setUsers] = useState<User[]>([])
   const [attempts, setAttempts] = useState<Attempt[]>([])
   const [syncMsg, setSyncMsg] = useState('')
+  const [roleErr, setRoleErr] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -65,9 +66,11 @@ export function Admin() {
   const handleChangeRole = async (userId: string, role: string) => {
     try {
       await api.put(`/api/admin/users/${userId}/role`, { role })
+      setRoleErr('')
       setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, role: role as User['role'] } : u)))
     } catch (err) {
-      console.error(err)
+      // Surface the server's {error} (e.g. last-admin demote 400) in the UI.
+      setRoleErr(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -138,7 +141,14 @@ export function Admin() {
 
       {/* users */}
       {tab === 'users' && (
-        <div className="mt-6 border border-edge bg-surface divide-y divide-edge-soft">
+        <>
+        {roleErr && (
+          <div className="mt-6 flex items-start justify-between gap-3 border border-danger/40 bg-danger-soft px-4 py-3 text-sm text-danger" role="alert">
+            <span>{roleErr}</span>
+            <button onClick={() => setRoleErr('')} className="micro shrink-0 text-danger/80 hover:text-danger transition-colors" aria-label="오류 닫기">닫기</button>
+          </div>
+        )}
+        <div className={`${roleErr ? 'mt-3' : 'mt-6'} border border-edge bg-surface divide-y divide-edge-soft`}>
           {users.map((u) => (
             <div key={u.id} className="flex items-center gap-4 px-4 py-3.5">
               {u.avatar_url ? (
@@ -164,6 +174,7 @@ export function Admin() {
             </div>
           ))}
         </div>
+        </>
       )}
 
       {/* attempts */}

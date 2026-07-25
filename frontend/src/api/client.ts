@@ -2,36 +2,51 @@ import { useAuthStore } from '../stores/auth'
 
 const BASE_URL = import.meta.env.VITE_API_URL || ''
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const { accessToken, refreshToken, setAuth, logout } = useAuthStore.getState()
+// httpOnly cookies (access_token, refresh_token) authenticate every same-origin
+// request, so the client sends no Authorization header and holds no tokens in
+// memory. On a 401 we refresh exactly once and retry the original request once;
+// concurrent 401s share a single in-flight refresh so the rotating refresh
+// token is never reused (reuse would revoke the whole token family).
+let refreshPromise: Promise<boolean> | null = null
 
+async function doRefresh(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+function refreshOnce(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = doRefresh().finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   }
 
-  if (accessToken) {
-    headers['Authorization'] = `Bearer ${accessToken}`
-  }
+  let res = await fetch(`${BASE_URL}${path}`, { ...options, headers, credentials: 'same-origin' })
 
-  let res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
-
-  if (res.status === 401 && refreshToken) {
-    const refreshRes = await fetch(`${BASE_URL}/api/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    })
-
-    if (refreshRes.ok) {
-      const data = await refreshRes.json()
-      const user = useAuthStore.getState().user!
-      setAuth(user, data.access_token, data.refresh_token)
-      headers['Authorization'] = `Bearer ${data.access_token}`
-      res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
+  if (res.status === 401 && !path.startsWith('/api/auth/refresh')) {
+    const refreshed = await refreshOnce()
+    if (refreshed) {
+      res = await fetch(`${BASE_URL}${path}`, { ...options, headers, credentials: 'same-origin' })
     } else {
-      logout()
-      window.location.href = '/login'
+      // Refresh rejected (missing/invalid/revoked): drop auth so the router
+      // guard sends the user to /login.
+      useAuthStore.getState().clearAuth()
     }
   }
 
@@ -50,4 +65,11 @@ export const api = {
   put: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+}
+
+// Single-flight cookie refresh for non-REST callers (the terminal WS recovers
+// an expired access cookie on an idle page through this, sharing the same
+// in-flight promise as REST 401s so the rotating refresh token is never reused).
+export function refreshAuth(): Promise<boolean> {
+  return refreshOnce()
 }

@@ -21,31 +21,24 @@ const ERROR_TEXT: Record<string, string> = {
 export function Login() {
   const [params] = useSearchParams()
   const navigate = useNavigate()
-  const { setAuth, user } = useAuthStore()
+  const { user, bootstrap } = useAuthStore()
 
   useEffect(() => {
-    // Tokens arrive in the URL fragment (location.hash) so they never touch
-    // server logs or the Referer header. Fall back to query for legacy links.
+    // OAuth callback lands on /login#callback=1 with httpOnly cookies already
+    // set by the backend. Strip the fragment and resolve the session via /me.
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
-    const accessToken = hash.get('access_token') || params.get('access_token')
-    const refreshToken = hash.get('refresh_token') || params.get('refresh_token')
-    const userStr = hash.get('user') || params.get('user')
-    if (accessToken && userStr) {
-      try {
-        const userData = JSON.parse(decodeURIComponent(userStr))
-        setAuth(userData, accessToken, refreshToken || '')
-        // strip the fragment so tokens don't linger in the address bar
-        window.history.replaceState(null, '', '/login')
-        navigate('/')
-      } catch { /* fall through */ }
+    if (hash.get('callback') === '1') {
+      window.history.replaceState(null, '', '/login')
+      void bootstrap()
     }
-  }, [params])
+  }, [bootstrap])
 
   useEffect(() => {
+    // Already authenticated (e.g. /me resolved on app load) → go to the console.
     if (user) navigate('/')
-  }, [user])
+  }, [user, navigate])
 
-  const error = params.get('error') || new URLSearchParams(window.location.hash.replace(/^#/, '')).get('error')
+  const error = params.get('error')
 
   return (
     <div className="min-h-screen bg-canvas bg-grid flex items-center justify-center px-5">
@@ -74,16 +67,13 @@ export function Login() {
               </div>
             )}
 
-            <button
-              onClick={() => { window.location.href = '/api/auth/github' }}
-              className="btn-primary w-full py-3"
-            >
+            <a href="/api/auth/github" className="btn-primary w-full py-3">
               <GithubMark className="w-5 h-5" /> GitHub으로 로그인
-            </button>
+            </a>
 
             <div className="mt-7 font-mono text-[11px] text-ink-faint leading-relaxed border-t border-edge-soft pt-5">
               <p><span className="text-accent">$</span> 로그인하면 GitHub 프로필(이름·아바타)만 가져옵니다.</p>
-              <p className="mt-1"><span className="text-accent">$</span> 토은 URL 단편으로 전달되어 서버 로그에 남지 않습니다.</p>
+              <p className="mt-1"><span className="text-accent">$</span> 세션은 httpOnly 쿠키로 유지되어 스크립트에서 읽을 수 없습니다.</p>
             </div>
           </div>
         </div>

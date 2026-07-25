@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -34,17 +35,19 @@ type UserRepository interface {
 }
 
 type Service struct {
-	cfg       *config.Config
-	db        *pgxpool.Pool
-	userRepo  UserRepository
-	oauthConf *oauth2.Config
+	cfg          *config.Config
+	db           *pgxpool.Pool
+	userRepo     UserRepository
+	refreshStore RefreshTokenStore
+	oauthConf    *oauth2.Config
 }
 
 func NewService(cfg *config.Config, db *pgxpool.Pool, userRepo UserRepository) *Service {
 	return &Service{
-		cfg:      cfg,
-		db:       db,
-		userRepo: userRepo,
+		cfg:          cfg,
+		db:           db,
+		userRepo:     userRepo,
+		refreshStore: &pgRefreshTokenStore{db: db},
 		oauthConf: &oauth2.Config{
 			ClientID:     cfg.GithubClientID,
 			ClientSecret: cfg.GithubClientSecret,
@@ -98,12 +101,7 @@ func (s *Service) HandleCallback(ctx context.Context, code string) (accessToken 
 		}
 	}
 
-	accessToken, err = s.generateAccessToken(u)
-	if err != nil {
-		return "", "", nil, err
-	}
-
-	refreshToken, err = s.generateRefreshToken(ctx, u)
+	accessToken, refreshToken, err = s.IssueTokens(ctx, u)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -111,50 +109,81 @@ func (s *Service) HandleCallback(ctx context.Context, code string) (accessToken 
 	return accessToken, refreshToken, u, nil
 }
 
-func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (string, string, error) {
+// IssueTokens generates a fresh access token and a refresh token that starts
+// a new token family (AUTH-5).
+func (s *Service) IssueTokens(ctx context.Context, u *models.User) (accessToken, refreshToken string, err error) {
+	accessToken, err = s.generateAccessToken(u)
+	if err != nil {
+		return "", "", err
+	}
+	refreshToken, err = s.generateRefreshToken(ctx, u, "")
+	if err != nil {
+		return "", "", err
+	}
+	return accessToken, refreshToken, nil
+}
+
+// RefreshAccessToken rotates a refresh token (AUTH-5): the presented token is
+// marked used and a new token is issued in the SAME family. Presenting an
+// already-used token is replay/theft → the whole family is revoked.
+func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (string, string, *models.User, error) {
 	tokenHash := hashToken(refreshToken)
 
-	var userID string
-	var expiresAt time.Time
-	err := s.db.QueryRow(ctx,
-		`SELECT user_id, expires_at FROM refresh_tokens WHERE token_hash = $1`, tokenHash,
-	).Scan(&userID, &expiresAt)
+	rec, err := s.refreshStore.FindRefreshToken(ctx, tokenHash)
 	if err != nil {
-		return "", "", ErrInvalidRefresh
+		return "", "", nil, ErrInvalidRefresh
 	}
 
-	if time.Now().After(expiresAt) {
-		s.db.Exec(ctx, `DELETE FROM refresh_tokens WHERE token_hash = $1`, tokenHash)
-		return "", "", ErrExpiredToken
+	if rec.Used {
+		// Token reuse: either a buggy client replaying or a stolen token being
+		// played after the legitimate client rotated. Revoke the whole family.
+		s.refreshStore.DeleteRefreshTokenFamily(ctx, rec.FamilyID)
+		log.Printf("SECURITY: refresh token reuse detected (user=%s family=%s); token family revoked", rec.UserID, rec.FamilyID)
+		return "", "", nil, ErrInvalidRefresh
 	}
 
-	u, err := s.userRepo.FindByID(ctx, userID)
+	if time.Now().After(rec.ExpiresAt) {
+		s.refreshStore.DeleteRefreshToken(ctx, tokenHash)
+		return "", "", nil, ErrExpiredToken
+	}
+
+	u, err := s.userRepo.FindByID(ctx, rec.UserID)
 	if err != nil {
-		return "", "", ErrInvalidRefresh
+		return "", "", nil, ErrInvalidRefresh
 	}
 
-	s.db.Exec(ctx, `DELETE FROM refresh_tokens WHERE token_hash = $1`, tokenHash)
+	if err := s.refreshStore.MarkRefreshTokenUsed(ctx, tokenHash); err != nil {
+		return "", "", nil, err
+	}
 
 	accessToken, err := s.generateAccessToken(u)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
-	newRefresh, err := s.generateRefreshToken(ctx, u)
+	newRefresh, err := s.generateRefreshToken(ctx, u, rec.FamilyID)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
-	return accessToken, newRefresh, nil
+	return accessToken, newRefresh, u, nil
 }
 
-// RevokeRefresh deletes a refresh token by its raw value so it can no longer
-// be exchanged (server-side logout). A missing/unknown token is not an error.
+// RevokeRefresh revokes the whole refresh-token family that the presented
+// token belongs to (server-side logout). A missing/unknown token is not an
+// error.
 func (s *Service) RevokeRefresh(ctx context.Context, refreshToken string) {
 	if refreshToken == "" {
 		return
 	}
-	s.db.Exec(ctx, `DELETE FROM refresh_tokens WHERE token_hash = $1`, hashToken(refreshToken))
+	tokenHash := hashToken(refreshToken)
+	rec, err := s.refreshStore.FindRefreshToken(ctx, tokenHash)
+	if err != nil {
+		// Unknown token: best-effort delete by hash (pre-family rows).
+		s.refreshStore.DeleteRefreshToken(ctx, tokenHash)
+		return
+	}
+	s.refreshStore.DeleteRefreshTokenFamily(ctx, rec.FamilyID)
 }
 
 func (s *Service) ValidateAccessToken(tokenString string) (*models.User, error) {
@@ -198,7 +227,10 @@ func (s *Service) generateAccessToken(u *models.User) (string, error) {
 	return token.SignedString([]byte(s.cfg.JWTSecret))
 }
 
-func (s *Service) generateRefreshToken(ctx context.Context, u *models.User) (string, error) {
+// generateRefreshToken mints a raw refresh token and stores its hash. An
+// empty familyID starts a new family (login); a given familyID joins that
+// family (rotation, AUTH-5).
+func (s *Service) generateRefreshToken(ctx context.Context, u *models.User, familyID string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -207,11 +239,7 @@ func (s *Service) generateRefreshToken(ctx context.Context, u *models.User) (str
 	tokenHash := hashToken(rawToken)
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
-	_, err := s.db.Exec(ctx,
-		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
-		u.ID, tokenHash, expiresAt,
-	)
-	if err != nil {
+	if _, err := s.refreshStore.CreateRefreshToken(ctx, u.ID, tokenHash, expiresAt, familyID); err != nil {
 		return "", err
 	}
 

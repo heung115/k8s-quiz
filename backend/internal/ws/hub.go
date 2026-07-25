@@ -10,29 +10,29 @@ import (
 type MessageType string
 
 const (
-	MsgAuth          MessageType = "auth"
-	MsgInput         MessageType = "input"
-	MsgResize        MessageType = "resize"
-	MsgOutput        MessageType = "output"
-	MsgStage         MessageType = "stage"
-	MsgVerifyResult  MessageType = "verify_result"
-	MsgTimeoutWarn   MessageType = "timeout_warning"
-	MsgSessionEnded  MessageType = "session_ended"
-	MsgError         MessageType = "error"
+	MsgAuth         MessageType = "auth"
+	MsgInput        MessageType = "input"
+	MsgResize       MessageType = "resize"
+	MsgOutput       MessageType = "output"
+	MsgStage        MessageType = "stage"
+	MsgVerifyResult MessageType = "verify_result"
+	MsgTimeoutWarn  MessageType = "timeout_warning"
+	MsgSessionEnded MessageType = "session_ended"
+	MsgError        MessageType = "error"
 )
 
 type Message struct {
-	Type    MessageType `json:"type"`
-	Data    string      `json:"data,omitempty"`
-	Token   string      `json:"token,omitempty"`
-	Cols    int         `json:"cols,omitempty"`
-	Rows    int         `json:"rows,omitempty"`
-	Stage   string      `json:"stage,omitempty"`
-	Message string      `json:"message,omitempty"`
-	Success bool        `json:"success,omitempty"`
-	Log     string      `json:"log,omitempty"`
-	Reason  string      `json:"reason,omitempty"`
-	RemainingSeconds int `json:"remaining_seconds,omitempty"`
+	Type             MessageType `json:"type"`
+	Data             string      `json:"data,omitempty"`
+	Token            string      `json:"token,omitempty"`
+	Cols             int         `json:"cols,omitempty"`
+	Rows             int         `json:"rows,omitempty"`
+	Stage            string      `json:"stage,omitempty"`
+	Message          string      `json:"message,omitempty"`
+	Success          bool        `json:"success,omitempty"`
+	Log              string      `json:"log,omitempty"`
+	Reason           string      `json:"reason,omitempty"`
+	RemainingSeconds int         `json:"remaining_seconds,omitempty"`
 }
 
 type Client struct {
@@ -100,6 +100,16 @@ func (h *Hub) SendToUser(userID string, msg Message) {
 	client, ok := h.clients[userID]
 	h.mu.RUnlock()
 	if ok {
+		client.WriteJSON(msg)
+	}
+}
+
+// Broadcast sends a message to every connected client (best-effort; used for
+// the shutdown session_ended{reason:"server_restart"} notice, WS-4).
+func (h *Hub) Broadcast(msg Message) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, client := range h.clients {
 		client.WriteJSON(msg)
 	}
 }

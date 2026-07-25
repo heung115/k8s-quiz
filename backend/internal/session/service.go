@@ -1,9 +1,10 @@
 package session
 
 import (
-	"strings"
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,15 @@ const (
 	StatusTimeout   Status = "timeout"
 )
 
+// Sentinel errors mapped to HTTP 429 by the problem handler (SESS-3).
+var (
+	ErrTooManySessions = errors.New("too many concurrent sessions")
+	ErrStartCooldown   = errors.New("start cooldown active")
+)
+
+// startCooldown throttles per-user session starts (SESS-3).
+const defaultStartCooldown = 3 * time.Second
+
 type Session struct {
 	ID          string
 	UserID      string
@@ -33,7 +43,10 @@ type Session struct {
 	Status      Status
 	StartedAt   time.Time
 	TimeoutAt   time.Time
-	mu          sync.Mutex
+	// timeoutWarned makes timeout_warning fire ONCE per session (WS-3);
+	// reset whenever the environment is (re)started.
+	timeoutWarned bool
+	mu            sync.Mutex
 }
 
 type StageCallback func(userID, stage, message string)
@@ -58,27 +71,33 @@ type Grader interface {
 }
 
 type Service struct {
-	containerMgr container.Manager
-	problemStore ProblemStore
-	scripts      ScriptProvider
-	sessions     map[string]*Session
-	mu           sync.RWMutex
-	userMu       sync.Map // userID -> *sync.Mutex, serializes start/reset/end per user
-	onStage      StageCallback
-	onTimeout    func(userID string)
+	containerMgr  container.Manager
+	problemStore  ProblemStore
+	scripts       ScriptProvider
+	sessions      map[string]*Session
+	mu            sync.RWMutex
+	userMu        sync.Map             // userID -> *sync.Mutex, serializes start/reset/end per user
+	maxSessions   int                  // SESS-3: 0 = unlimited
+	startCooldown time.Duration        // SESS-3: per-user start throttle
+	lastStart     map[string]time.Time // SESS-3: last successful start per user
+	onStage       StageCallback
+	onTimeout     func(userID string)
 	onTimeoutWarn func(userID string, remainingSeconds int)
-	onVerify     VerifyCallback
-	onCrash      func(userID string)
-	grader       Grader
-	pool         *container.Pool
+	onVerify      VerifyCallback
+	onCrash       func(userID string)
+	onReset       func(userID string)
+	grader        Grader
+	pool          *container.Pool
 }
 
 func NewService(mgr container.Manager, store ProblemStore, scripts ScriptProvider) *Service {
 	s := &Service{
-		containerMgr: mgr,
-		problemStore: store,
-		scripts:      scripts,
-		sessions:     make(map[string]*Session),
+		containerMgr:  mgr,
+		problemStore:  store,
+		scripts:       scripts,
+		sessions:      make(map[string]*Session),
+		startCooldown: defaultStartCooldown,
+		lastStart:     make(map[string]time.Time),
 	}
 	go s.timeoutWatcher()
 	go s.crashWatcher()
@@ -105,6 +124,25 @@ func (s *Service) SetCrashCallback(cb func(string)) {
 	s.onCrash = cb
 }
 
+// SetResetCallback wires the session_ended{reason:"reset"} WS event (WS-4).
+func (s *Service) SetResetCallback(cb func(string)) {
+	s.onReset = cb
+}
+
+// SetMaxConcurrentSessions caps total active sessions; 0 = unlimited (SESS-3).
+func (s *Service) SetMaxConcurrentSessions(n int) {
+	s.mu.Lock()
+	s.maxSessions = n
+	s.mu.Unlock()
+}
+
+// SetStartCooldown overrides the per-user start throttle (SESS-3; tests).
+func (s *Service) SetStartCooldown(d time.Duration) {
+	s.mu.Lock()
+	s.startCooldown = d
+	s.mu.Unlock()
+}
+
 func (s *Service) SetGrader(g Grader) {
 	s.grader = g
 }
@@ -117,6 +155,27 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 	ul := s.userLock(userID)
 	ul.Lock()
 	defer ul.Unlock()
+
+	// SESS-3: per-user start cooldown, then global concurrency cap. The
+	// user's own existing session does not count against the cap (a start
+	// replaces it, keeping the total unchanged).
+	now := time.Now()
+	s.mu.Lock()
+	if last, ok := s.lastStart[userID]; ok && now.Sub(last) < s.startCooldown {
+		s.mu.Unlock()
+		return "", ErrStartCooldown
+	}
+	if s.maxSessions > 0 {
+		active := len(s.sessions)
+		if _, hasOwn := s.sessions[userID]; hasOwn {
+			active--
+		}
+		if active >= s.maxSessions {
+			s.mu.Unlock()
+			return "", ErrTooManySessions
+		}
+	}
+	s.mu.Unlock()
 
 	s.mu.Lock()
 	existing := s.sessions[userID]
@@ -140,10 +199,7 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 		return "", fmt.Errorf("create attempt: %w", err)
 	}
 
-	image := p.BaseImage
-	if p.Image != "" {
-		image = p.Image
-	}
+	image := p.EffectiveImage()
 
 	s.emitStage(userID, "container_created", "Creating container...")
 
@@ -192,6 +248,10 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 	s.mu.Unlock()
 
 	go s.setupEnvironment(sess, p, attempt, preWarmed)
+
+	s.mu.Lock()
+	s.lastStart[userID] = time.Now()
+	s.mu.Unlock()
 
 	return sess.ID, nil
 }
@@ -369,6 +429,12 @@ func (s *Service) ResetEnvironment(ctx context.Context, userID string) error {
 		return fmt.Errorf("no active session")
 	}
 
+	// WS-4: tell the client the current environment is going away BEFORE the
+	// new container's boot stages start (the session itself stays active).
+	if s.onReset != nil {
+		s.onReset(userID)
+	}
+
 	s.containerMgr.Remove(ctx, sess.ContainerID)
 
 	p, err := s.problemStore.FindByID(ctx, sess.ProblemID)
@@ -376,10 +442,7 @@ func (s *Service) ResetEnvironment(ctx context.Context, userID string) error {
 		return err
 	}
 
-	image := p.BaseImage
-	if p.Image != "" {
-		image = p.Image
-	}
+	image := p.EffectiveImage()
 
 	containerID, err := s.containerMgr.Create(ctx, container.CreateOpts{
 		Image: image,
@@ -400,6 +463,7 @@ func (s *Service) ResetEnvironment(ctx context.Context, userID string) error {
 	sess.mu.Lock()
 	sess.ContainerID = containerID
 	sess.Status = StatusBooting
+	sess.timeoutWarned = false // WS-3: warn once per environment
 	sess.mu.Unlock()
 
 	attempt, _ := s.problemStore.GetAttempt(ctx, sess.AttemptID)
@@ -546,7 +610,8 @@ func (s *Service) checkTimeouts() []string {
 			expired = append(expired, userID)
 		}
 		remaining := time.Until(sess.TimeoutAt)
-		if remaining > 0 && remaining < 5*time.Minute && sess.Status == StatusReady {
+		if remaining > 0 && remaining < 5*time.Minute && sess.Status == StatusReady && !sess.timeoutWarned {
+			sess.timeoutWarned = true // WS-3: fire ONCE per session
 			if s.onTimeoutWarn != nil {
 				s.onTimeoutWarn(userID, int(remaining.Seconds()))
 			}

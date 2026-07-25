@@ -1,4 +1,4 @@
-# CrashLoopBackOff 힌트
+# CreateContainerConfigError 힌트
 
 1. `kubectl describe pod`로 Pod 이벤트를 확인하세요.
 2. Events 섹션에서 컨테이너가 시작되지 못하는 이유를 찾아보세요.

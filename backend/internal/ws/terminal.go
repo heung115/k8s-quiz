@@ -65,6 +65,15 @@ func (h *TerminalHandler) checkOrigin(r *http.Request) bool {
 }
 
 func (h *TerminalHandler) HandleWebSocket(c *gin.Context) {
+	// Primary (browser, FRONT-3): authenticate from the access_token cookie at
+	// upgrade time — cookie-authed connections need no auth message.
+	var userID string
+	if token, err := c.Cookie(middleware.AccessTokenCookie); err == nil && token != "" {
+		if u, err := h.validator.ValidateAccessToken(token); err == nil {
+			userID = u.ID
+		}
+	}
+
 	conn, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("websocket upgrade error: %v", err)
@@ -72,28 +81,32 @@ func (h *TerminalHandler) HandleWebSocket(c *gin.Context) {
 	}
 	conn.SetReadLimit(maxWSMessage)
 
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-	_, msgData, err := conn.ReadMessage()
-	if err != nil {
-		conn.Close()
-		return
+	if userID == "" {
+		// Fallback (non-browser clients): legacy first-message auth
+		// {"type":"auth","token":"..."}.
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_, msgData, err := conn.ReadMessage()
+		if err != nil {
+			conn.Close()
+			return
+		}
+
+		var authMsg Message
+		if err := json.Unmarshal(msgData, &authMsg); err != nil || authMsg.Type != MsgAuth || authMsg.Token == "" {
+			writeMsg(conn, Message{Type: MsgError, Message: "authentication required"})
+			conn.Close()
+			return
+		}
+
+		u, err := h.validator.ValidateAccessToken(authMsg.Token)
+		if err != nil {
+			writeMsg(conn, Message{Type: MsgError, Message: "invalid token"})
+			conn.Close()
+			return
+		}
+		userID = u.ID
 	}
 
-	var authMsg Message
-	if err := json.Unmarshal(msgData, &authMsg); err != nil || authMsg.Type != MsgAuth || authMsg.Token == "" {
-		writeMsg(conn, Message{Type: MsgError, Message: "authentication required"})
-		conn.Close()
-		return
-	}
-
-	u, err := h.validator.ValidateAccessToken(authMsg.Token)
-	if err != nil {
-		writeMsg(conn, Message{Type: MsgError, Message: "invalid token"})
-		conn.Close()
-		return
-	}
-
-	userID := u.ID
 	conn.SetReadDeadline(time.Time{})
 	// Keep the connection alive: each pong resets the read deadline so a
 	// silently-dead client is reaped instead of leaking a goroutine.
