@@ -189,3 +189,26 @@ func TestHubBroadcast(t *testing.T) {
 		}
 	}
 }
+
+// T7: SendToUser delivers only to the addressed user.
+func TestHubSendToUserIsolation(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+	srv := wsServer(t, hub)
+
+	conn1 := dial(t, srv, "u1")
+	conn2 := dial(t, srv, "u2")
+	waitForClient(t, hub, "u1")
+	waitForClient(t, hub, "u2")
+
+	hub.SendToUser("u1", Message{Type: MsgStage, Stage: "ready", Message: "for u1 only"})
+
+	if m := readMsg(t, conn1, 2*time.Second); m.Type != MsgStage || m.Stage != "ready" {
+		t.Errorf("u1: expected stage/ready, got %+v", m)
+	}
+
+	conn2.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, _, err := conn2.ReadMessage(); err == nil {
+		t.Error("u2 must not receive u1's message")
+	}
+}

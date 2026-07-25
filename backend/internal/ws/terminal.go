@@ -179,7 +179,8 @@ func (h *TerminalHandler) readPump(client *Client, containerID string) {
 		case MsgInput:
 			execConn.Write([]byte(msg.Data))
 		case MsgResize:
-			execConn.Resize(msg.Cols, msg.Rows)
+			cols, rows := clampResize(msg.Cols, msg.Rows)
+			execConn.Resize(cols, rows)
 		}
 	}
 }
@@ -199,6 +200,22 @@ func (h *TerminalHandler) writePump(client *Client) {
 			}
 		}
 	}
+}
+
+// clampResize bounds client-requested PTY dimensions (SEC3-7) so a websocket
+// client cannot request absurd sizes.
+func clampResize(cols, rows int) (int, int) {
+	return clampInt(cols, 1, 500), clampInt(rows, 1, 200)
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func writeMsg(conn *websocket.Conn, msg Message) {

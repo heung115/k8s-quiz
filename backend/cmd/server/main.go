@@ -31,6 +31,11 @@ func main() {
 		log.Fatalf("insecure configuration: %v", err)
 	}
 
+	// SEC3-11: quiet gin debug output outside local development.
+	if !cfg.IsLocal() {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
 	db, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)

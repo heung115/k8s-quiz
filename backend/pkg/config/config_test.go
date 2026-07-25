@@ -4,12 +4,16 @@ import "testing"
 
 func TestIsLocal(t *testing.T) {
 	cases := map[string]bool{
-		"http://localhost:5173":      true,
-		"http://127.0.0.1:8080":      true,
-		"http://[::1]:3000":          true,
-		"":                           true,
-		"https://quiz.example.com":   false,
-		"https://localhost.evil.com": false,
+		"http://localhost:5173":     true,
+		"http://127.0.0.1:8080":     true,
+		"http://[::1]:3000":         true,
+		"https://localhost":         true,
+		"":                          false, // SEC3-1: fail closed on empty
+		"prod.example.com":          false, // scheme-less must NOT be local
+		"https://k8squiz.io":        false,
+		"https://quiz.example.com":  false,
+		"ftp://localhost":           false, // non-http(s) scheme
+		"http://localhost.evil.com": false,
 	}
 	for url, want := range cases {
 		c := &Config{FrontendURL: url}

@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -23,7 +25,13 @@ type RefreshTokenStore interface {
 	// family; the (new or given) family id is returned.
 	CreateRefreshToken(ctx context.Context, userID, tokenHash string, expiresAt time.Time, familyID string) (string, error)
 	FindRefreshToken(ctx context.Context, tokenHash string) (*RefreshTokenRecord, error)
-	MarkRefreshTokenUsed(ctx context.Context, tokenHash string) error
+	// ClaimRefreshToken atomically marks an unused, unexpired token used and
+	// returns its record (SEC3-2: one UPDATE ... WHERE used=false, so two
+	// concurrent rotations of the same token cannot both win). If the token
+	// cannot be claimed (already used → reuse, or expired), its CURRENT
+	// record is returned so the caller can revoke the family / delete it; an
+	// unknown token returns an error.
+	ClaimRefreshToken(ctx context.Context, tokenHash string) (*RefreshTokenRecord, error)
 	DeleteRefreshToken(ctx context.Context, tokenHash string) error
 	DeleteRefreshTokenFamily(ctx context.Context, familyID string) error
 }
@@ -60,9 +68,22 @@ func (r *pgRefreshTokenStore) FindRefreshToken(ctx context.Context, tokenHash st
 	return rec, nil
 }
 
-func (r *pgRefreshTokenStore) MarkRefreshTokenUsed(ctx context.Context, tokenHash string) error {
-	_, err := r.db.Exec(ctx, `UPDATE refresh_tokens SET used = true WHERE token_hash = $1`, tokenHash)
-	return err
+func (r *pgRefreshTokenStore) ClaimRefreshToken(ctx context.Context, tokenHash string) (*RefreshTokenRecord, error) {
+	rec := &RefreshTokenRecord{}
+	err := r.db.QueryRow(ctx,
+		`UPDATE refresh_tokens SET used = true
+		 WHERE token_hash = $1 AND used = false AND expires_at > NOW()
+		 RETURNING user_id, family_id, expires_at`, tokenHash,
+	).Scan(&rec.UserID, &rec.FamilyID, &rec.ExpiresAt)
+	if err == nil {
+		return rec, nil // freshly claimed (rec.Used=false ⇒ legitimate rotation)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	// Not claimable: report current state (Used=true ⇒ reuse path; expired ⇒
+	// expired path). Unknown token ⇒ error.
+	return r.FindRefreshToken(ctx, tokenHash)
 }
 
 func (r *pgRefreshTokenStore) DeleteRefreshToken(ctx context.Context, tokenHash string) error {

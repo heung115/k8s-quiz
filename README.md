@@ -142,9 +142,11 @@ k8s-quiz/
 | Method | Path | 설명 |
 |--------|------|------|
 | GET | `/api/auth/github` | GitHub OAuth 시작 |
-| GET | `/api/auth/github/callback` | OAuth 콜백 → 토큰 발급 |
-| POST | `/api/auth/refresh` | Access Token 갱신 |
+| GET | `/api/auth/github/callback` | OAuth 콜백 → httpOnly 쿠키 설정 후 `/login#callback=1`로 리다이렉트 |
+| POST | `/api/auth/refresh` | refresh 쿠키 회전 (재사용 시 패밀리 전체 폐기) |
 | GET | `/api/auth/me` | 현재 사용자 정보 |
+| POST, DELETE | `/api/auth/logout` | 로그아웃 (리프레시 폐기 + 쿠키 삭제) |
+| POST | `/api/auth/dev-login` | **로컬 개발 전용**: 서명된 JWT를 쿠키로 교환 (비로컬 404) |
 
 ### Problems (인증 필요)
 | Method | Path | 설명 |
@@ -191,7 +193,9 @@ k8s-quiz/
 연결: `ws://host/ws/terminal`
 
 ### 인증
-연결 후 첫 번째 메시지로 JWT 전송:
+httpOnly `access_token` 쿠키가 업그레이드 요청에 실려 인증됩니다(브라우저 —
+별도 인증 메시지 불필요). 비브라우저 클라이언트는 폴백으로 연결 후 첫
+메시지로 JWT를 보낼 수 있습니다:
 ```json
 {"type": "auth", "token": "<access_token>"}
 ```
@@ -245,16 +249,42 @@ sleep 5
 
 ### verify.sh
 사용자가 문제를 해결했는지 검증합니다. exit 0 = 성공, exit 1 = 실패.
+백엔드는 이 스크립트를 **90초 예산**으로 실행합니다. 수정 후 k3s가 수렴하는
+동안 기다리도록 **반드시 유한 폴링**하세요 — 단일 체크는 정상 수정 후에
+거짓 실패(false-fail)를 냅니다. 롤아웃 중 옛 Pod가 섞일 수 있으니
+`items[0]`가 아니라 **매칭 Pod 전수 스캔**을 사용하세요.
 ```bash
 #!/bin/sh
-STATUS=$(kubectl get pods -l app=my-app -o jsonpath='{.items[0].status.phase}')
-if [ "$STATUS" = "Running" ]; then
-  echo "SUCCESS"
-  exit 0
-fi
-echo "FAIL: status=$STATUS"
+set -u
+DEADLINE=$(( $(date +%s) + 70 ))   # 90초 exec 예산 이하
+n=0
+while [ "$n" -lt 23 ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  PODS=$(kubectl get pods -l app=my-app -o jsonpath='{range .items[*]}{.status.phase}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null)
+  if printf '%s\n' "$PODS" | grep -q '^Running True$'; then
+    echo "SUCCESS: an app=my-app pod is Running and Ready"
+    exit 0
+  fi
+  n=$((n + 1))
+  sleep 3
+done
+echo "FAIL: no app=my-app pod is Running+Ready within 70s (last: ${PODS:-none})"
 exit 1
 ```
+규칙: POSIX sh(busybox ash) · `|| true`로 체크를 무력화 금지(fail-closed) ·
+외부 이미지는 태그/다이제스트 고정.
+
+### setup.sh 주의
+멱등적으로 작성하세요(재실행 가능 — `kubectl taint --overwrite` 등). 클러스터
+컴포넌트(예: coredns)를 건드리기 전에는 존재/Ready를 유한 대기하고, 실패 시
+분명한 메시지로 `exit 1` 하세요(`set -e` 뒤로 숨기지 말 것).
+
+### 로더 검증 규칙
+`LoadAll`/`Sync`는 아래 규칙을 어긴 문제를 **건너뛰고 로그**만 남깁니다(전체
+로드는 계속됨). Admin 생성/수정도 같은 규칙으로 거부됩니다.
+- `id`: `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` (폴더명과 동일)
+- `category`: pod | network | storage | rbac | scheduling | config
+- `difficulty`: easy | medium | hard · `type`: fix | find | deploy · `verify_type`: script | choice | text
+- `verify_type: choice`는 선택지 ≥2개 + `correct_choice`가 선택지 중 하나
 
 ### hint.md (선택)
 사용자에게 표시될 힌트. 스포일러 없이 방향만 제시합니다.

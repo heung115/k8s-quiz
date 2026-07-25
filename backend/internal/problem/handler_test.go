@@ -78,6 +78,7 @@ type mockSession struct {
 	verifyOK    bool
 	verifyLog   string
 	verifyErr   error
+	resetErr    error
 	current     *session.CurrentSession
 }
 
@@ -94,7 +95,7 @@ func (m *mockSession) SubmitChoice(ctx context.Context, userID, choiceID string)
 	return choiceID == "b", nil
 }
 func (m *mockSession) ResetEnvironment(ctx context.Context, userID string) error {
-	return nil
+	return m.resetErr
 }
 
 func authStub() gin.HandlerFunc {
@@ -448,5 +449,38 @@ func TestStartProblemCooldown429(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &body)
 	if body["error"] != "starting too fast; wait a few seconds and retry" {
 		t.Errorf("unexpected error message: %q", body["error"])
+	}
+}
+
+// SEC3-4: verify throttle maps to 429.
+func TestVerifyTooFast429(t *testing.T) {
+	sess := &mockSession{verifyErr: session.ErrVerifyTooFast}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+
+	req := httptest.NewRequest("POST", "/api/problems/p1/verify", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+	var body map[string]string
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body["error"] != "verifying too fast" {
+		t.Errorf("unexpected error message: %q", body["error"])
+	}
+}
+
+// SEC3-5: reset cooldown maps to 429.
+func TestResetTooFast429(t *testing.T) {
+	sess := &mockSession{resetErr: session.ErrStartCooldown}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+
+	req := httptest.NewRequest("POST", "/api/problems/p1/reset", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
 	}
 }

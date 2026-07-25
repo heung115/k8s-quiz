@@ -21,9 +21,17 @@ jobs:
       - name: Build
         working-directory: backend
         run: go build ./...
-      - name: Test
+      - name: Test (race)
         working-directory: backend
-        run: go test ./... -v -short
+        run: go test ./... -v -short -race
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
+      - name: govulncheck (advisory)
+        continue-on-error: true
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          cd backend && govulncheck ./...
 
   frontend:
     runs-on: ubuntu-latest
@@ -37,6 +45,31 @@ jobs:
       - name: Install
         working-directory: frontend
         run: npm ci
+      - name: Typecheck
+        working-directory: frontend
+        run: npx tsc --noEmit
+      - name: Test
+        working-directory: frontend
+        run: npm test
       - name: Build
         working-directory: frontend
         run: npm run build
+
+  problems:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Syntax (sh -n)
+        run: |
+          fail=0
+          for f in problems/*/*.sh; do
+            sh -n "$f" || { echo "SYNTAX FAIL: $f"; fail=1; }
+          done
+          exit $fail
+      - name: shellcheck
+        run: |
+          fail=0
+          for f in problems/*/*.sh; do
+            shellcheck -S error "$f" || fail=1
+          done
+          exit $fail

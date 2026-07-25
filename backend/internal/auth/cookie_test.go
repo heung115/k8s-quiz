@@ -58,13 +58,22 @@ func (m *memRefreshStore) FindRefreshToken(ctx context.Context, tokenHash string
 	}, nil
 }
 
-func (m *memRefreshStore) MarkRefreshTokenUsed(ctx context.Context, tokenHash string) error {
+// ClaimRefreshToken emulates the pg atomic UPDATE ... WHERE used=false
+// (SEC3-2): the used check and set happen under one mutex hold, so two
+// concurrent claims of the same token cannot both win.
+func (m *memRefreshStore) ClaimRefreshToken(ctx context.Context, tokenHash string) (*RefreshTokenRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if r, ok := m.rows[tokenHash]; ok {
-		r.used = true
+	r, ok := m.rows[tokenHash]
+	if !ok {
+		return nil, errors.New("not found")
 	}
-	return nil
+	rec := &RefreshTokenRecord{UserID: r.userID, FamilyID: r.familyID, Used: r.used, ExpiresAt: r.expiresAt}
+	if !r.used && time.Now().Before(r.expiresAt) {
+		r.used = true // CAS winner
+		rec.Used = false
+	}
+	return rec, nil // loser sees Used=true; expired sees stale ExpiresAt
 }
 
 func (m *memRefreshStore) DeleteRefreshToken(ctx context.Context, tokenHash string) error {
@@ -417,5 +426,58 @@ func TestDevLoginDisabledOutsideLocal(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404 outside local dev, got %d", w.Code)
+	}
+}
+
+// T4 + SEC3-2: M concurrent refreshes of ONE token — the atomic claim
+// guarantees exactly one rotation wins. Every loser observes Used=true and
+// takes the reuse path (revokes the family), so the invariant is: exactly
+// one success, and afterwards the family is fully revoked (fail-safe: the
+// user re-authenticates). No two callers ever receive distinct valid
+// rotations of the same token.
+func TestConcurrentRefreshExactlyOneWins(t *testing.T) {
+	const M = 8
+	store := newMemRefreshStore()
+	svc := newCookieTestService(store)
+	raw, _ := svc.generateRefreshToken(context.Background(), cookieTestUser, "")
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes := 0
+	wg.Add(M)
+	for i := 0; i < M; i++ {
+		go func() {
+			defer wg.Done()
+			_, _, _, err := svc.RefreshAccessToken(context.Background(), raw)
+			if err == nil {
+				mu.Lock()
+				successes++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if successes != 1 {
+		t.Fatalf("expected exactly 1 successful rotation, got %d", successes)
+	}
+
+	// The original token is used; replaying it now must hit the reuse path
+	// (family revoked) and fail.
+	if _, _, _, err := svc.RefreshAccessToken(context.Background(), raw); err == nil {
+		t.Fatal("expected reused token to fail")
+	}
+	// Interleaving-dependent but bounded: either the family is fully revoked
+	// (0 rows) or the winner's freshly issued token survived the losers'
+	// revocation (1 row). Never more than one valid lineage, never the
+	// original token left usable.
+	if n := store.count(); n > 1 {
+		t.Errorf("expected at most 1 surviving token row, got %d", n)
+	}
+	store.mu.Lock()
+	orig, origExists := store.rows[hashToken(raw)]
+	store.mu.Unlock()
+	if origExists && !orig.used {
+		t.Error("original token must remain marked used")
 	}
 }
