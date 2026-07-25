@@ -129,7 +129,10 @@ func (s *Service) IssueTokens(ctx context.Context, u *models.User) (accessToken,
 func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (string, string, *models.User, error) {
 	tokenHash := hashToken(refreshToken)
 
-	rec, err := s.refreshStore.FindRefreshToken(ctx, tokenHash)
+	// SEC3-2: the claim is a single atomic UPDATE (used=false → true), so two
+	// concurrent refreshes of the same token cannot both succeed; the loser
+	// sees Used=true and takes the reuse path.
+	rec, err := s.refreshStore.ClaimRefreshToken(ctx, tokenHash)
 	if err != nil {
 		return "", "", nil, ErrInvalidRefresh
 	}
@@ -150,10 +153,6 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 	u, err := s.userRepo.FindByID(ctx, rec.UserID)
 	if err != nil {
 		return "", "", nil, ErrInvalidRefresh
-	}
-
-	if err := s.refreshStore.MarkRefreshTokenUsed(ctx, tokenHash); err != nil {
-		return "", "", nil, err
 	}
 
 	accessToken, err := s.generateAccessToken(u)

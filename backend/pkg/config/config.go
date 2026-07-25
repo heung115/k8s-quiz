@@ -66,8 +66,16 @@ func isLocalURL(raw string) bool {
 	if err != nil {
 		return false
 	}
+	// Fail CLOSED (SEC3-1): only an explicit http/https URL whose hostname is
+	// a loopback name counts as local. Scheme-less values like
+	// "prod.example.com" parse with an empty scheme/path-only URL and must
+	// NOT be treated as local (that would bypass the weak-secret guard,
+	// enable dev-login, and drop the Secure cookie flag).
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
 	h := strings.ToLower(u.Hostname())
-	return h == "" || h == "localhost" || h == "127.0.0.1" || h == "::1"
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // IsLocal reports whether FRONTEND_URL points at localhost. It gates

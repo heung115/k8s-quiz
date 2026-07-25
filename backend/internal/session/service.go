@@ -29,10 +29,16 @@ const (
 var (
 	ErrTooManySessions = errors.New("too many concurrent sessions")
 	ErrStartCooldown   = errors.New("start cooldown active")
+	ErrVerifyTooFast   = errors.New("verify cooldown active") // SEC3-4
 )
 
-// startCooldown throttles per-user session starts (SESS-3).
-const defaultStartCooldown = 3 * time.Second
+// startCooldown throttles per-user session starts (SESS-3); verifyThrottle
+// bounds how often a user may start verification (SEC3-4: verify.sh execs
+// are expensive).
+const (
+	defaultStartCooldown  = 3 * time.Second
+	defaultVerifyThrottle = 2 * time.Second
+)
 
 type Session struct {
 	ID          string
@@ -71,33 +77,38 @@ type Grader interface {
 }
 
 type Service struct {
-	containerMgr  container.Manager
-	problemStore  ProblemStore
-	scripts       ScriptProvider
-	sessions      map[string]*Session
-	mu            sync.RWMutex
-	userMu        sync.Map             // userID -> *sync.Mutex, serializes start/reset/end per user
-	maxSessions   int                  // SESS-3: 0 = unlimited
-	startCooldown time.Duration        // SESS-3: per-user start throttle
-	lastStart     map[string]time.Time // SESS-3: last successful start per user
-	onStage       StageCallback
-	onTimeout     func(userID string)
-	onTimeoutWarn func(userID string, remainingSeconds int)
-	onVerify      VerifyCallback
-	onCrash       func(userID string)
-	onReset       func(userID string)
-	grader        Grader
-	pool          *container.Pool
+	containerMgr   container.Manager
+	problemStore   ProblemStore
+	scripts        ScriptProvider
+	sessions       map[string]*Session
+	mu             sync.RWMutex
+	userMu         sync.Map             // userID -> *sync.Mutex, serializes start/reset/end per user
+	maxSessions    int                  // SESS-3: 0 = unlimited
+	startCooldown  time.Duration        // SESS-3/SEC3-5: per-user start+reset throttle
+	lastStart      map[string]time.Time // SESS-3: last successful start/reset per user
+	pendingStarts  int                  // T3: in-flight starts reserved against the cap
+	verifyThrottle time.Duration        // SEC3-4: min gap between verify starts
+	lastVerify     map[string]time.Time // SEC3-4: last verify start per user
+	onStage        StageCallback
+	onTimeout      func(userID string)
+	onTimeoutWarn  func(userID string, remainingSeconds int)
+	onVerify       VerifyCallback
+	onCrash        func(userID string)
+	onReset        func(userID string)
+	grader         Grader
+	pool           *container.Pool
 }
 
 func NewService(mgr container.Manager, store ProblemStore, scripts ScriptProvider) *Service {
 	s := &Service{
-		containerMgr:  mgr,
-		problemStore:  store,
-		scripts:       scripts,
-		sessions:      make(map[string]*Session),
-		startCooldown: defaultStartCooldown,
-		lastStart:     make(map[string]time.Time),
+		containerMgr:   mgr,
+		problemStore:   store,
+		scripts:        scripts,
+		sessions:       make(map[string]*Session),
+		startCooldown:  defaultStartCooldown,
+		lastStart:      make(map[string]time.Time),
+		verifyThrottle: defaultVerifyThrottle,
+		lastVerify:     make(map[string]time.Time),
 	}
 	go s.timeoutWatcher()
 	go s.crashWatcher()
@@ -136,10 +147,17 @@ func (s *Service) SetMaxConcurrentSessions(n int) {
 	s.mu.Unlock()
 }
 
-// SetStartCooldown overrides the per-user start throttle (SESS-3; tests).
+// SetStartCooldown overrides the per-user start/reset throttle (SESS-3; tests).
 func (s *Service) SetStartCooldown(d time.Duration) {
 	s.mu.Lock()
 	s.startCooldown = d
+	s.mu.Unlock()
+}
+
+// SetVerifyThrottle overrides the per-user verify throttle (SEC3-4; tests).
+func (s *Service) SetVerifyThrottle(d time.Duration) {
+	s.mu.Lock()
+	s.verifyThrottle = d
 	s.mu.Unlock()
 }
 
@@ -160,13 +178,18 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 	// user's own existing session does not count against the cap (a start
 	// replaces it, keeping the total unchanged).
 	now := time.Now()
+	reserved := false
 	s.mu.Lock()
 	if last, ok := s.lastStart[userID]; ok && now.Sub(last) < s.startCooldown {
 		s.mu.Unlock()
 		return "", ErrStartCooldown
 	}
 	if s.maxSessions > 0 {
-		active := len(s.sessions)
+		// Count in-flight starts (pendingStarts) too, otherwise concurrent
+		// starts can all pass the check before any session lands in the map
+		// (TOCTOU → cap exceeded). The user's own existing session does not
+		// count: a start replaces it, keeping the total unchanged.
+		active := len(s.sessions) + s.pendingStarts
 		if _, hasOwn := s.sessions[userID]; hasOwn {
 			active--
 		}
@@ -174,8 +197,17 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 			s.mu.Unlock()
 			return "", ErrTooManySessions
 		}
+		s.pendingStarts++
+		reserved = true
 	}
 	s.mu.Unlock()
+	releaseReservation := func() {
+		if reserved {
+			s.mu.Lock()
+			s.pendingStarts--
+			s.mu.Unlock()
+		}
+	}
 
 	s.mu.Lock()
 	existing := s.sessions[userID]
@@ -186,6 +218,7 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 
 	p, err := s.problemStore.FindByID(ctx, problemID)
 	if err != nil {
+		releaseReservation()
 		return "", fmt.Errorf("problem not found: %w", err)
 	}
 
@@ -196,6 +229,7 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 		StartedAt: time.Now(),
 	}
 	if err := s.problemStore.CreateAttempt(ctx, attempt); err != nil {
+		releaseReservation()
 		return "", fmt.Errorf("create attempt: %w", err)
 	}
 
@@ -227,6 +261,7 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 		})
 		if err != nil {
 			s.failAttempt(ctx, attempt, "container creation failed: "+err.Error())
+			releaseReservation()
 			return "", fmt.Errorf("create container: %w", err)
 		}
 	}
@@ -245,6 +280,9 @@ func (s *Service) StartProblem(ctx context.Context, userID, problemID string) (s
 
 	s.mu.Lock()
 	s.sessions[userID] = sess
+	if reserved {
+		s.pendingStarts-- // reservation becomes the real session
+	}
 	s.mu.Unlock()
 
 	go s.setupEnvironment(sess, p, attempt, preWarmed)
@@ -311,6 +349,18 @@ func (s *Service) Verify(ctx context.Context, userID string) (bool, string, erro
 	if sess == nil {
 		return false, "", fmt.Errorf("no active session")
 	}
+
+	// SEC3-4: at most one verify start per user per throttle window
+	// (verify.sh execs are expensive; this is a DoS guard, not a lock —
+	// concurrent verifies are still serialized by the status flip below).
+	now := time.Now()
+	s.mu.Lock()
+	if last, ok := s.lastVerify[userID]; ok && now.Sub(last) < s.verifyThrottle {
+		s.mu.Unlock()
+		return false, "", ErrVerifyTooFast
+	}
+	s.lastVerify[userID] = now
+	s.mu.Unlock()
 
 	sess.mu.Lock()
 	if sess.Status != StatusReady {
@@ -429,6 +479,16 @@ func (s *Service) ResetEnvironment(ctx context.Context, userID string) error {
 		return fmt.Errorf("no active session")
 	}
 
+	// SEC3-5: a reset recreates the environment, so it honors the same
+	// per-user cooldown as start.
+	now := time.Now()
+	s.mu.Lock()
+	if last, ok := s.lastStart[userID]; ok && now.Sub(last) < s.startCooldown {
+		s.mu.Unlock()
+		return ErrStartCooldown
+	}
+	s.mu.Unlock()
+
 	// WS-4: tell the client the current environment is going away BEFORE the
 	// new container's boot stages start (the session itself stays active).
 	if s.onReset != nil {
@@ -468,6 +528,10 @@ func (s *Service) ResetEnvironment(ctx context.Context, userID string) error {
 
 	attempt, _ := s.problemStore.GetAttempt(ctx, sess.AttemptID)
 	go s.setupEnvironment(sess, p, attempt, false)
+
+	s.mu.Lock()
+	s.lastStart[userID] = time.Now()
+	s.mu.Unlock()
 
 	return nil
 }

@@ -20,13 +20,19 @@ type mockContainerManager struct {
 	readyAfter int
 	readyCalls int
 	running    bool
+	createGate chan struct{} // if set, Create blocks until closed (T3)
+	nextID     int
 }
 
 func (m *mockContainerManager) Create(ctx context.Context, opts container.CreateOpts) (string, error) {
+	if m.createGate != nil {
+		<-m.createGate
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.created = append(m.created, opts)
-	return "container-123", nil
+	m.nextID++
+	return "container-" + string(rune('a'+m.nextID-1)), nil
 }
 
 func (m *mockContainerManager) Exec(ctx context.Context, containerID string, cmd []string) (container.ExecResult, error) {
@@ -122,9 +128,10 @@ func newTestService() (*Service, *mockContainerManager, *mockProblemStore) {
 	mgr := &mockContainerManager{execResult: container.ExecResult{ExitCode: 0, Stdout: "ok"}, running: true}
 	store := newMockProblemStore()
 	svc := NewService(mgr, store, &mockScriptProvider{})
-	// Tests start back-to-back; disable the SESS-3 cooldown unless a test
-	// re-enables it explicitly.
+	// Tests start back-to-back; disable the SESS-3/SEC3-5 cooldown and the
+	// SEC3-4 verify throttle unless a test re-enables them explicitly.
 	svc.SetStartCooldown(0)
+	svc.SetVerifyThrottle(0)
 	return svc, mgr, store
 }
 
@@ -662,5 +669,124 @@ func TestStartProblemUsesEffectiveImage(t *testing.T) {
 	defer mgr.mu.Unlock()
 	if len(mgr.created) != 1 || mgr.created[0].Image != "custom:v2" {
 		t.Errorf("expected image>base_image precedence, got %+v", mgr.created)
+	}
+}
+
+// SEC3-4: verifies are throttled per user (min gap between starts).
+func TestVerifyThrottle(t *testing.T) {
+	svc, mgr, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+	// A FAILING verify keeps the session ready, so the throttle (not the
+	// session status) is what gates the second/third attempts.
+	mgr.execResult = container.ExecResult{ExitCode: 1, Stdout: "FAIL"}
+	svc.SetVerifyThrottle(100 * time.Millisecond)
+
+	svc.StartProblem(context.Background(), "user-1", "p1")
+	time.Sleep(100 * time.Millisecond)
+
+	if _, _, err := svc.Verify(context.Background(), "user-1"); err != nil {
+		t.Fatalf("first verify failed: %v", err)
+	}
+	if _, _, err := svc.Verify(context.Background(), "user-1"); !errors.Is(err, ErrVerifyTooFast) {
+		t.Fatalf("expected ErrVerifyTooFast, got %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if _, _, err := svc.Verify(context.Background(), "user-1"); err != nil {
+		t.Errorf("expected verify allowed after throttle window, got %v", err)
+	}
+}
+
+// SEC3-5: reset honors the same per-user cooldown as start.
+func TestResetHonorsCooldown(t *testing.T) {
+	svc, _, store := newTestService()
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+	svc.SetStartCooldown(100 * time.Millisecond)
+
+	svc.StartProblem(context.Background(), "user-1", "p1")
+	time.Sleep(50 * time.Millisecond)
+
+	if err := svc.ResetEnvironment(context.Background(), "user-1"); !errors.Is(err, ErrStartCooldown) {
+		t.Fatalf("expected ErrStartCooldown on immediate reset, got %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if err := svc.ResetEnvironment(context.Background(), "user-1"); err != nil {
+		t.Errorf("expected reset allowed after cooldown, got %v", err)
+	}
+	// The reset itself re-arms the cooldown.
+	if err := svc.ResetEnvironment(context.Background(), "user-1"); !errors.Is(err, ErrStartCooldown) {
+		t.Errorf("expected cooldown re-armed by reset, got %v", err)
+	}
+}
+
+// T3: the global cap must hold under concurrent starts (TOCTOU regression).
+// Create blocks on a gate so all starts overlap before any session lands in
+// the map; without the pendingStarts reservation every start would pass the
+// check and the cap would be exceeded.
+func TestStartProblemCapUnderConcurrency(t *testing.T) {
+	mgr := &mockContainerManager{execResult: container.ExecResult{ExitCode: 0, Stdout: "ok"}, running: true}
+	gate := make(chan struct{})
+	mgr.createGate = gate
+	store := newMockProblemStore()
+	svc := NewService(mgr, store, &mockScriptProvider{})
+	svc.SetStartCooldown(0)
+	svc.SetMaxConcurrentSessions(2)
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+
+	const users = 5
+	errs := make([]error, users)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < users; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = svc.StartProblem(context.Background(), "user-"+string(rune('a'+i)), "p1")
+		}(i)
+	}
+	close(start)
+	time.Sleep(100 * time.Millisecond) // let all goroutines reach the gated Create
+	close(gate)                        // release container creation
+	wg.Wait()
+
+	capErrs, ok := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrTooManySessions):
+			capErrs++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if ok != 2 || capErrs != 3 {
+		t.Fatalf("expected 2 starts ok + 3 ErrTooManySessions, got ok=%d cap=%d", ok, capErrs)
+	}
+	time.Sleep(50 * time.Millisecond)
+	svc.mu.RLock()
+	active, pending := len(svc.sessions), svc.pendingStarts
+	svc.mu.RUnlock()
+	if active > 2 {
+		t.Errorf("cap exceeded: %d active sessions", active)
+	}
+	if pending != 0 {
+		t.Errorf("leaked %d pending reservations", pending)
+	}
+}
+
+// The reservation is released when start fails (no slot leak).
+func TestStartProblemCapReservationReleasedOnFailure(t *testing.T) {
+	svc, _, store := newTestService()
+	svc.SetMaxConcurrentSessions(1)
+
+	// Unknown problem → start fails; the reservation must be released so the
+	// next (valid) start is not falsely rejected.
+	if _, err := svc.StartProblem(context.Background(), "user-1", "ghost"); err == nil {
+		t.Fatal("expected error for unknown problem")
+	}
+	store.problems["p1"] = &models.Problem{ID: "p1", TimeoutMinutes: 30, BaseImage: "k3s-base:latest", VerifyType: "script"}
+	if _, err := svc.StartProblem(context.Background(), "user-2", "p1"); err != nil {
+		t.Errorf("expected slot released after failed start, got %v", err)
 	}
 }

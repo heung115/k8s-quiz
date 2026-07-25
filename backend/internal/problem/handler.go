@@ -138,6 +138,11 @@ func (h *Handler) Start(c *gin.Context) {
 func (h *Handler) Reset(c *gin.Context) {
 	u := middleware.GetUser(c)
 	if err := h.sessionSvc.ResetEnvironment(c.Request.Context(), u.ID); err != nil {
+		if errors.Is(err, session.ErrStartCooldown) {
+			// SEC3-5: reset honors the per-user start cooldown.
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "resetting too fast; wait a few seconds and retry"})
+			return
+		}
 		log.Printf("reset for %s failed: %v", u.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reset environment"})
 		return
@@ -149,6 +154,11 @@ func (h *Handler) Verify(c *gin.Context) {
 	u := middleware.GetUser(c)
 	success, verifyLog, err := h.sessionSvc.Verify(c.Request.Context(), u.ID)
 	if err != nil {
+		if errors.Is(err, session.ErrVerifyTooFast) {
+			// SEC3-4: per-user verify throttle.
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "verifying too fast"})
+			return
+		}
 		log.Printf("verify for %s failed: %v", u.ID, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "verification failed"})
 		return
