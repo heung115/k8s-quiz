@@ -2,329 +2,154 @@
 
 [![CI](https://github.com/heung115/k8s-quiz/actions/workflows/ci.yaml/badge.svg)](https://github.com/heung115/k8s-quiz/actions/workflows/ci.yaml)
 
-웹 기반 Kubernetes 트러블슈팅 플랫폼. 고장난 k3s 환경을 웹 터미널에서 직접 해결하고 검증받습니다.
+Kubernetes 문제는 문서로 읽을 때보다, 실제로 한 번 망가뜨리고 고쳐볼 때 더 오래 남습니다. K8s Quiz는 브라우저에서 고장 난 k3s 환경에 접속해 `kubectl`로 원인을 찾고, 해결 결과를 검증받는 실습 플랫폼입니다.
 
-## 프로젝트 상태
+문제를 고르면 사용자 전용 컨테이너가 만들어지고, 준비가 끝나면 웹 터미널이 열립니다. 문제를 해결한 뒤 **확인하기**를 누르면 검증 스크립트가 클러스터 상태를 판정합니다. 종료하거나 시간이 만료되면 컨테이너와 네트워크를 정리합니다.
 
-- 개인 프로젝트로 개발 중인 로컬 프로토타입입니다.
-- 사용자별 k3s 컨테이너를 실행하므로 신뢰할 수 있는 개발 환경에서만
-  사용해야 합니다.
-- 공개 서비스 트래픽이나 프로덕션 용량을 검증한 프로젝트가 아닙니다.
-- 보안 점검 결과와 남은 위험은 [`SECURITY.md`](SECURITY.md)에
-  기록합니다.
+## 어떤 문제를 풀 수 있나요?
 
-## Quick Start
+현재 일곱 가지 시나리오가 들어 있습니다.
+
+| 영역 | 시나리오 |
+| --- | --- |
+| Pod | ConfigMap 키 오류로 인한 `CreateContainerConfigError` |
+| Network | Service DNS 해석 실패 |
+| Storage | PVC가 `Pending` 상태에 머무는 문제 |
+| RBAC | ServiceAccount 권한 거부 |
+| Scheduling | Node taint 때문에 스케줄링되지 않는 Pod |
+| Config | ConfigMap 참조 오류 원인 찾기(객관식) |
+| Deploy | nginx Deployment를 조건에 맞게 직접 배포하기 |
+
+각 문제는 `problem.yaml`, `setup.sh`, `verify.sh`, `hint.md`로 정의됩니다. 문제를 추가하는 사람이 Kubernetes 상태를 만들고 검증하는 로직까지 함께 작성할 수 있도록 한 구조입니다.
+
+## 구성
+
+- **Backend** — Go, Gin, PostgreSQL, WebSocket
+- **Frontend** — React, TypeScript, Vite, Tailwind CSS, Zustand, xterm.js
+- **실습 환경** — Docker Compose와 k3s-in-Docker
+- **인증** — GitHub OAuth, 짧은 수명의 access cookie와 refresh-token rotation
+
+백엔드는 Docker SDK를 통해 실습 컨테이너를 관리합니다. REST API는 문제 목록과 세션 같은 상태를, WebSocket은 터미널 입출력·준비 단계·검증 결과를 담당합니다. 세션은 사용자당 하나만 유지하며, 컨테이너 생성 수 상한과 선택적 pre-warm pool도 설정할 수 있습니다.
+
+## 시작하기
+
+Docker Desktop 또는 Docker Engine이 실행 중이어야 합니다. 실습 컨테이너 안에서 k3s를 띄우므로 일반적인 프론트엔드 프로젝트보다 CPU와 메모리가 더 필요합니다.
+
+예제 문제는 별도 저장소를 Git submodule로 참조합니다. 처음 clone할 때는 `--recurse-submodules`를 붙이거나, 이미 clone했다면 `make problems-init`을 한 번 실행하세요.
 
 ```bash
-# 1. 환경 변수 설정
+# 처음 clone하는 경우
+git clone --recurse-submodules https://github.com/heung115/k8s-quiz.git
+cd k8s-quiz
+
+# 이미 clone한 경우에는 아래 명령만 실행
+make problems-init
+
+# 1. 로컬 설정을 만들고 GitHub OAuth 값을 채웁니다.
 cp .env.example .env
-# .env 파일에서 GitHub OAuth Client ID/Secret 설정
 
-# 2. k3s-base 이미지 빌드 (문제 환경에 필요)
-make image   # 또는: docker compose --profile image up --build k3s-base
+# 2. 문제 환경에 사용할 k3s 이미지를 빌드합니다.
+make image
 
-# 3. 전체 스택 실행
+# 3. 앱과 PostgreSQL을 실행합니다.
 docker compose up --build
-
-# 4. 접속
-# Frontend: http://localhost:5173
-# Backend API: http://localhost:8080
 ```
+
+브라우저에서 [http://localhost:5173](http://localhost:5173)으로 접속합니다. 로그인까지 확인하려면 GitHub OAuth App의 callback URL을 아래처럼 등록해야 합니다.
+
+```text
+http://localhost:5173/api/auth/github/callback
+```
+
+`docker compose` 환경에서는 프론트엔드가 `/api`와 `/ws` 요청을 백엔드로 프록시합니다. 백엔드를 따로 실행할 때는 `.env`의 `DATABASE_URL`과 `PROBLEMS_REPO_PATH`를 현재 환경에 맞게 조정하세요.
 
 ## 로컬 개발
 
 ```bash
-# Backend
-cd backend
-go run ./cmd/server
-
-# Frontend
-cd frontend
-npm install
-npm run dev
-
-# DB (Docker)
+# PostgreSQL만 Docker로 실행하는 예시
 docker run -d --name k8s-quiz-db \
   -e POSTGRES_USER=k8squiz \
   -e POSTGRES_PASSWORD=k8squiz \
   -e POSTGRES_DB=k8squiz \
   -p 5432:5432 postgres:16-alpine
 
-# Migration
-migrate -path backend/migrations -database "postgres://k8squiz:k8squiz@localhost:5432/k8squiz?sslmode=disable" up
+# backend
+cd backend && go run ./cmd/server
+
+# 다른 터미널에서 frontend
+cd frontend && npm install && npm run dev
 ```
 
-## 로컬 부하 테스트
-
-실행 중인 백엔드의 `/health` 엔드포인트를 기본 200 RPS로 30초간
-검증합니다. 이 테스트는 로컬 기준선 확인용이며 실제 사용자 트래픽이나
-프로덕션 용량을 의미하지 않습니다.
+마이그레이션은 서버가 시작될 때 적용됩니다. 별도로 실행하고 싶다면 다음 명령을 사용할 수 있습니다.
 
 ```bash
-k6 run load-tests/health.js
+migrate -path backend/migrations \
+  -database "postgres://k8squiz:k8squiz@localhost:5432/k8squiz?sslmode=disable" up
 ```
 
-조건은 환경변수로 변경할 수 있습니다.
+## 검증
 
 ```bash
-BASE_URL=http://127.0.0.1:8080 \
-TARGET_RPS=300 \
-DURATION=60s \
-MAX_VUS=150 \
-k6 run load-tests/health.js
+# backend: 단위/핸들러 테스트와 race detector
+cd backend && go test ./... -short -race
+
+# frontend: 타입 검사, 테스트, 프로덕션 빌드
+cd frontend
+npm ci
+npx tsc --noEmit
+npm test
+npm run build
+
+# 문제 스크립트 문법 검사 (shellcheck이 설치돼 있으면 함께 실행)
+cd .. && make lint-problems
 ```
 
-### PostgreSQL query plan
+간단한 `/health` 부하 기준선과 PostgreSQL query-plan 재현 스크립트도 포함했습니다. 측정 방법과 결과는 [부하 테스트 기준선](docs/load-test-baseline-2026-07-24.md), [query-plan 기록](docs/postgres-query-plan-2026-07-24.md)에서 볼 수 있습니다.
 
-실제 attempt 조회 query를 10만 건 합성 데이터로 재현해
-`EXPLAIN ANALYZE` 결과를 비교합니다. 전체 작업은 transaction에서
-실행한 뒤 rollback하므로 합성 데이터가 남지 않습니다.
+## 문제를 추가하려면
 
-```bash
-docker compose exec -T db \
-  psql -U k8squiz -d k8squiz -f - \
-  < load-tests/postgres_attempts_index.sql
+공개 예제 문제는 [`k8s-quiz-problems`](https://github.com/heung115/k8s-quiz-problems) 저장소에서 관리하며, 이 저장소에는 `problems/` submodule로 연결됩니다. 문제 ID와 같은 이름의 디렉터리를 만들면 됩니다.
+
+```text
+problems/
+  my-problem/
+    problem.yaml
+    setup.sh
+    verify.sh
+    hint.md
 ```
 
-측정 결과와 적용·기각한 index는
-[`docs/postgres-query-plan-2026-07-24.md`](docs/postgres-query-plan-2026-07-24.md)에
-기록했습니다.
-
-## 프로젝트 구조
-
-```
-k8s-quiz/
-├── backend/
-│   ├── cmd/server/main.go          # 서버 엔트리포인트
-│   ├── internal/
-│   │   ├── auth/                   # GitHub OAuth + JWT (handler, service)
-│   │   ├── container/              # ContainerManager 인터페이스 + Docker 구현
-│   │   ├── problem/                # 문제 CRUD, GitLoader, Repository
-│   │   ├── session/                # 세션 라이프사이클, 타임아웃, 검증
-│   │   ├── user/                   # 사용자 관리, 진행률
-│   │   └── ws/                     # WebSocket Hub + 터미널 핸들러
-│   ├── migrations/                 # PostgreSQL 마이그레이션
-│   ├── pkg/
-│   │   ├── config/                 # 환경 변수 설정
-│   │   ├── middleware/             # Auth, AdminOnly 미들웨어
-│   │   └── models/                 # 공유 데이터 모델
-│   └── Dockerfile
-├── frontend/
-│   ├── src/
-│   │   ├── api/client.ts           # API 클라이언트 (토큰 리프레시 포함)
-│   │   ├── components/             # Layout, Terminal (xterm.js)
-│   │   ├── pages/                  # Dashboard, ProblemPage, Login, Profile, Admin, Docs
-│   │   ├── stores/                 # Zustand (auth, session)
-│   │   └── types/                  # TypeScript 타입 정의
-│   ├── nginx.conf                  # 프로덕션 리버스 프록시
-│   └── Dockerfile
-├── problems/                       # 문제 정의 (Git 기반)
-│   ├── pod-crashloop/
-│   ├── network-dns-fail/
-│   ├── pv-pending/
-│   ├── rbac-denied/
-│   ├── node-taint/
-│   └── configmap-typo/
-├── docker/
-│   └── k3s-base/                   # k3s 베이스 이미지
-├── load-tests/                     # k6 및 PostgreSQL query-plan 실험
-├── docs/
-│   ├── development-history.md      # 구현·E2E 검증 기록
-│   └── *-2026-07-24.md             # 재현 가능한 성능 기준선
-├── docker-compose.yaml
-├── .github/workflows/ci.yaml
-└── .env.example
-```
-
-## API 엔드포인트
-
-### Auth (공개)
-| Method | Path | 설명 |
-|--------|------|------|
-| GET | `/api/auth/github` | GitHub OAuth 시작 |
-| GET | `/api/auth/github/callback` | OAuth 콜백 → httpOnly 쿠키 설정 후 `/login#callback=1`로 리다이렉트 |
-| POST | `/api/auth/refresh` | refresh 쿠키 회전 (재사용 시 패밀리 전체 폐기) |
-| GET | `/api/auth/me` | 현재 사용자 정보 |
-| POST, DELETE | `/api/auth/logout` | 로그아웃 (리프레시 폐기 + 쿠키 삭제) |
-| POST | `/api/auth/dev-login` | **로컬 개발 전용**: 서명된 JWT를 쿠키로 교환 (비로컬 404) |
-
-### Problems (인증 필요)
-| Method | Path | 설명 |
-|--------|------|------|
-| GET | `/api/problems` | 문제 목록 (category, difficulty, type 필터) |
-| GET | `/api/problems/:id` | 문제 상세 |
-| POST | `/api/problems/:id/start` | 문제 시작 → 컨테이너 생성 |
-| POST | `/api/problems/:id/reset` | 환경 리셋 |
-| POST | `/api/problems/:id/verify` | 검증 실행 (async) |
-| POST | `/api/problems/:id/submit` | 선택지 제출 (find+choice) |
-
-### Sessions (인증 필요)
-| Method | Path | 설명 |
-|--------|------|------|
-| GET | `/api/sessions/current` | 현재 활성 세션 |
-| DELETE | `/api/sessions/current` | 세션 종료 |
-
-### Users (인증 필요)
-| Method | Path | 설명 |
-|--------|------|------|
-| GET | `/api/users/me/attempts` | 내 시도 기록 |
-| GET | `/api/users/me/progress` | 내 진행률 |
-| GET | `/api/users/me/achievements` | 내 배지 |
-
-### Leaderboard (인증 필요)
-| Method | Path | 설명 |
-|--------|------|------|
-| GET | `/api/leaderboard` | 해결 순위 (상위 50명) |
-
-### Admin (관리자)
-| Method | Path | 설명 |
-|--------|------|------|
-| GET | `/api/admin/problems` | 전체 문제 목록 |
-| POST | `/api/admin/problems` | 문제 생성 |
-| PUT | `/api/admin/problems/:id` | 문제 수정 |
-| DELETE | `/api/admin/problems/:id` | 문제 삭제 |
-| POST | `/api/admin/problems/sync` | Git에서 문제 동기화 |
-| GET | `/api/admin/users` | 사용자 목록 |
-| PUT | `/api/admin/users/:id/role` | 역할 변경 |
-| GET | `/api/admin/attempts` | 전체 시도 기록 |
-
-## WebSocket 프로토콜
-
-연결: `ws://host/ws/terminal`
-
-### 인증
-httpOnly `access_token` 쿠키가 업그레이드 요청에 실려 인증됩니다(브라우저 —
-별도 인증 메시지 불필요). 비브라우저 클라이언트는 폴백으로 연결 후 첫
-메시지로 JWT를 보낼 수 있습니다:
-```json
-{"type": "auth", "token": "<access_token>"}
-```
-
-### 메시지 타입
-| Type | Direction | 설명 |
-|------|-----------|------|
-| `auth` | Client → Server | JWT 인증 |
-| `input` | Client → Server | 터미널 입력 |
-| `resize` | Client → Server | 터미널 크기 변경 (cols, rows) |
-| `output` | Server → Client | 터미널 출력 |
-| `stage` | Server → Client | 단계 진행 (stage, message) |
-| `verify_result` | Server → Client | 검증 결과 (success, log) |
-| `timeout_warning` | Server → Client | 타임아웃 경고 (remaining_seconds) |
-| `session_ended` | Server → Client | 세션 종료 (reason) |
-| `error` | Server → Client | 오류 (message) |
-
-## 문제 추가 가이드
-
-`problems/` 디렉토리에 새 폴더를 만들고 아래 파일들을 작성합니다.
-
-### problem.yaml
 ```yaml
-id: my-problem              # 고유 ID (폴더명과 동일)
+# problem.yaml
+id: my-problem
 title: "문제 제목"
 description: |
-  문제 설명 (마크다운 지원)
-category: pod               # pod | network | storage | rbac | scheduling | config
-difficulty: easy            # easy | medium | hard
-type: fix                   # fix | find | deploy
+  학습자가 확인할 상황과 목표를 적습니다.
+category: pod           # pod | network | storage | rbac | scheduling | config
+difficulty: easy        # easy | medium | hard
+type: fix               # fix | find | deploy
 timeout_minutes: 30
-verify_type: script         # script | choice | text
+verify_type: script     # script | choice | text
 base_image: k3s-base:latest
-# grading_prompt: |         # verify_type: text일 때 LLM 채점 기준
-#   모든 Pod가 Running 상태인지 확인하세요.
-# choices:                  # verify_type: choice인 경우
-#   - id: a
-#     text: "선택지 A"
-# correct_choice: a
 ```
 
-### setup.sh
-k3s 부팅 후 컨테이너 내부에서 실행됩니다. 고장난 상태를 만듭니다.
-```bash
-#!/bin/sh
-kubectl apply -f - <<'YAML'
-# 고장난 리소스 정의
-YAML
-sleep 5
-```
+`setup.sh`는 고장 난 상태를 만들고, `verify.sh`는 해결 여부를 확인합니다. 검증 스크립트는 exit code 0을 성공으로, 1을 실패로 처리합니다. Kubernetes가 수렴하는 시간을 고려해 유한 폴링으로 작성하고, 조건을 확인하는 명령이 실패를 가리지 않도록 fail-closed 방식으로 작성하는 것을 권장합니다.
 
-### verify.sh
-사용자가 문제를 해결했는지 검증합니다. exit 0 = 성공, exit 1 = 실패.
-백엔드는 이 스크립트를 **90초 예산**으로 실행합니다. 수정 후 k3s가 수렴하는
-동안 기다리도록 **반드시 유한 폴링**하세요 — 단일 체크는 정상 수정 후에
-거짓 실패(false-fail)를 냅니다. 롤아웃 중 옛 Pod가 섞일 수 있으니
-`items[0]`가 아니라 **매칭 Pod 전수 스캔**을 사용하세요.
-```bash
-#!/bin/sh
-set -u
-DEADLINE=$(( $(date +%s) + 70 ))   # 90초 exec 예산 이하
-n=0
-while [ "$n" -lt 23 ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  PODS=$(kubectl get pods -l app=my-app -o jsonpath='{range .items[*]}{.status.phase}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null)
-  if printf '%s\n' "$PODS" | grep -q '^Running True$'; then
-    echo "SUCCESS: an app=my-app pod is Running and Ready"
-    exit 0
-  fi
-  n=$((n + 1))
-  sleep 3
-done
-echo "FAIL: no app=my-app pod is Running+Ready within 70s (last: ${PODS:-none})"
-exit 1
-```
-규칙: POSIX sh(busybox ash) · `|| true`로 체크를 무력화 금지(fail-closed) ·
-외부 이미지는 태그/다이제스트 고정.
+문제 저장소에서 변경을 병합한 뒤 메인 저장소에서 `make problems-update`로 submodule 포인터를 갱신합니다. 이어서 Admin 화면에서 **Sync Problems**를 실행하거나 서버를 다시 시작하면 로더가 유효한 문제만 데이터베이스에 반영합니다. ID, 카테고리, 난이도, 검증 방식의 검증 규칙은 [구현 계획](PLAN.md)에 정리했습니다.
 
-### setup.sh 주의
-멱등적으로 작성하세요(재실행 가능 — `kubectl taint --overwrite` 등). 클러스터
-컴포넌트(예: coredns)를 건드리기 전에는 존재/Ready를 유한 대기하고, 실패 시
-분명한 메시지로 `exit 1` 하세요(`set -e` 뒤로 숨기지 말 것).
+## 운영 경계
 
-### 로더 검증 규칙
-`LoadAll`/`Sync`는 아래 규칙을 어긴 문제를 **건너뛰고 로그**만 남깁니다(전체
-로드는 계속됨). Admin 생성/수정도 같은 규칙으로 거부됩니다.
-- `id`: `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` (폴더명과 동일)
-- `category`: pod | network | storage | rbac | scheduling | config
-- `difficulty`: easy | medium | hard · `type`: fix | find | deploy · `verify_type`: script | choice | text
-- `verify_type: choice`는 선택지 ≥2개 + `correct_choice`가 선택지 중 하나
+이 저장소는 Kubernetes 실습과 로컬 개발을 위한 프로젝트입니다. 백엔드가 Docker socket에 접근해 privileged k3s 컨테이너를 만들기 때문에, 신뢰할 수 있는 개인 개발 환경에서만 실행해야 합니다. 공개 인터넷에 그대로 배포하거나 다중 테넌트 서비스로 운영하기 위한 보안·격리·관측성 검증은 아직 범위에 포함하지 않았습니다.
 
-### hint.md (선택)
-사용자에게 표시될 힌트. 스포일러 없이 방향만 제시합니다.
+`POOL_SIZE`를 켜면 시작 시간은 줄일 수 있지만 warm 컨테이너가 기본 Docker 네트워크를 사용합니다. 그래서 기본값은 `0`이며, 네트워크 격리가 더 중요한 환경에서는 활성화하지 않는 편이 좋습니다.
 
-작성 후 Admin 페이지에서 "Sync Problems"를 클릭하거나 서버를 재시작하면 DB에 반영됩니다.
+## 더 읽기
 
-## 환경 변수
+- [전체 구현 계획과 API/WebSocket 계약](PLAN.md)
+- [개발 과정과 Docker E2E 검증 기록](docs/development-history.md)
+- [환경 변수 예시](.env.example)
+- [CI 설정](.github/workflows/ci.yaml)
 
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `GITHUB_CLIENT_ID` | (필수) | GitHub OAuth App Client ID |
-| `GITHUB_CLIENT_SECRET` | (필수) | GitHub OAuth App Client Secret |
-| `JWT_SECRET` | `dev-secret-change-me` | JWT Access Token 서명 키 |
-| `JWT_REFRESH_SECRET` | `dev-refresh-secret-change-me` | Refresh Token용 (예비) |
-| `DATABASE_URL` | `postgres://k8squiz:k8squiz@localhost:5432/k8squiz?sslmode=disable` | PostgreSQL 연결 |
-| `PROBLEMS_REPO_PATH` | `./problems` | 문제 디렉토리 경로 |
-| `FRONTEND_URL` | `http://localhost:5173` | CORS 허용 프론트엔드 URL |
-| `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker 소켓 경로 |
-| `SERVER_PORT` | `8080` | 백엔드 서버 포트 |
-| `MAX_CONCURRENT_SESSIONS` | `0` | 전역 활성 세션(컨테이너) 상한. 0=무제한, 초과 시 `/start`가 429 |
-| `LLM_API_KEY` | (비어있음) | LLM 채점용 API 키 (text grading, 선택) |
-| `LLM_MODEL` | `gpt-4o-mini` | LLM 모델 |
-| `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI 호환 API 엔드포인트 |
-| `POOL_SIZE` | `0` | 컨테이너 pre-warm 풀 크기 (0=비활성화). 활성화 시 시작 지연은 줄지만 warm 컨테이너가 default 네트워크를 써서 세션 네트워크 격리가 완화됨 |
-| `POOL_IMAGE` | `k3s-base:latest` | pre-warm 풀에 사용할 이미지 |
+## 공개 전 참고
 
-## 테스트
-
-```bash
-# 백엔드 전체 테스트
-cd backend && go test ./... -short
-
-# 프론트엔드 빌드 검증
-cd frontend && npm run build
-```
-
-## Tech Stack
-
-- **Backend**: Go + Gin, pgx (PostgreSQL), gorilla/websocket
-- **Frontend**: React + Vite + TypeScript, Tailwind CSS, Zustand, xterm.js, Lucide Icons
-- **Infra**: Docker Compose, k3s-in-Docker, PostgreSQL 16
-- **Auth**: GitHub OAuth → JWT (Access 15m + Refresh 7d)
-- **CI**: GitHub Actions (build + test)
+소스 공개 자체는 환영하지만, 다른 사람이 재사용할 수 있게 하려면 공개 전에 원하는 라이선스를 선택해 `LICENSE` 파일을 추가하는 편이 좋습니다. 현재는 라이선스가 포함되어 있지 않습니다.

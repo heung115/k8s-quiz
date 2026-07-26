@@ -1,4 +1,4 @@
-.PHONY: image up down test backend-test frontend-test lint-problems
+.PHONY: image up down test backend-test frontend-test lint-problems problems-init problems-update
 
 ## Build the k3s-base problem image (required before starting problems)
 image:
@@ -27,3 +27,11 @@ lint-problems:
 		if command -v shellcheck >/dev/null 2>&1; then shellcheck -S warning "$$f" || fail=1; fi; \
 	done; \
 	[ $$fail -eq 0 ] && echo "problem scripts OK"
+
+## Fetch the public sample-problem submodule after a normal git clone.
+problems-init:
+	git submodule update --init --recursive
+
+## Move the sample-problem submodule to the latest main commit.
+problems-update:
+	git submodule update --init --remote problems

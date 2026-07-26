@@ -1,0 +1,4 @@
+[submodule "problems"]
+	path = problems
+	url = https://github.com/heung115/k8s-quiz-problems.git
+	branch = main
