@@ -1,4 +1,4 @@
-FROM rancher/k3s:v1.29.3-k3s1
+FROM rancher/k3s:v1.36.2-k3s1
 
 # rancher/k3s is a minimal image with no package manager (no apk/apt).
 # It ships k3s + kubectl + sh, which is all setup/verify scripts need
