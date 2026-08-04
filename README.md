@@ -4,7 +4,7 @@
 
 Kubernetes 문제는 문서로 읽을 때보다, 실제로 한 번 망가뜨리고 고쳐볼 때 더 오래 남습니다. K8s Quiz는 브라우저에서 고장 난 k3s 환경에 접속해 `kubectl`로 원인을 찾고, 해결 결과를 검증받는 실습 플랫폼입니다.
 
-문제를 고르면 사용자 전용 컨테이너가 만들어지고, 준비가 끝나면 웹 터미널이 열립니다. 문제를 해결한 뒤 **확인하기**를 누르면 검증 스크립트가 클러스터 상태를 판정합니다. 종료하거나 시간이 만료되면 컨테이너와 네트워크를 정리합니다.
+현재 로컬 개발 경로에서는 문제를 고르면 사용자 전용 컨테이너가 만들어지고, 준비가 끝나면 웹 터미널이 열립니다. 문제를 해결한 뒤 **확인하기**를 누르면 검증 스크립트가 클러스터 상태를 판정합니다. 종료하거나 시간이 만료되면 컨테이너와 네트워크를 정리합니다. 이 privileged Docker 경로는 공개 서비스용 격리나 신뢰된 채점 경계가 아닙니다.
 
 ## 어떤 문제를 풀 수 있나요?
 
@@ -29,7 +29,7 @@ Kubernetes 문제는 문서로 읽을 때보다, 실제로 한 번 망가뜨리�
 - **실습 환경** — Docker Compose와 k3s-in-Docker
 - **인증** — GitHub OAuth, 짧은 수명의 access cookie와 refresh-token rotation
 
-백엔드는 Docker SDK를 통해 실습 컨테이너를 관리합니다. REST API는 문제 목록과 세션 같은 상태를, WebSocket은 터미널 입출력·준비 단계·검증 결과를 담당합니다. 세션은 사용자당 하나만 유지하며, 컨테이너 생성 수 상한과 선택적 pre-warm pool도 설정할 수 있습니다.
+백엔드는 provider-neutral Runner 경계를 통해 실습 환경을 관리합니다. 현재 구현된 `local-docker` Runner는 신뢰할 수 있는 로컬 개발 전용입니다. REST API는 generation에 결합된 시작·리셋·종료 작업을 처리하고, `/ws/terminal`은 터미널 바이트만, PostgreSQL-backed `/ws/lifecycle`은 준비 단계·검증·정리 상태를 담당합니다. 터미널은 exact `terminal_attached` 확인 뒤에만 입력을 열며, 세션은 사용자당 하나만 유지하고 전역 동시 세션 상한을 설정할 수 있습니다.
 
 ## 시작하기
 
@@ -48,11 +48,9 @@ make problems-init
 # 1. 로컬 설정을 만들고 GitHub OAuth 값을 채웁니다.
 cp .env.example .env
 
-# 2. 문제 환경에 사용할 k3s 이미지를 빌드합니다.
-make image
-
-# 3. 앱과 PostgreSQL을 실행합니다.
-docker compose up --build
+# 2. 문제용 k3s 이미지를 먼저 빌드하고 앱·PostgreSQL을 실행합니다.
+# make up은 내부에서 make image를 선행합니다.
+make up
 ```
 
 브라우저에서 [http://localhost:5173](http://localhost:5173)으로 접속합니다. 로그인까지 확인하려면 GitHub OAuth App의 callback URL을 아래처럼 등록해야 합니다.
@@ -61,7 +59,7 @@ docker compose up --build
 http://localhost:5173/api/auth/github/callback
 ```
 
-`docker compose` 환경에서는 프론트엔드가 `/api`와 `/ws` 요청을 백엔드로 프록시합니다. 백엔드를 따로 실행할 때는 `.env`의 `DATABASE_URL`과 `PROBLEMS_REPO_PATH`를 현재 환경에 맞게 조정하세요.
+`docker compose` 환경에서는 프론트엔드가 `/api`와 `/ws` 요청을 백엔드로 프록시합니다. 백엔드를 따로 실행할 때는 `.env`의 `DATABASE_URL`, `PROBLEMS_REPO_PATH`, `PROBLEM_ARTIFACT_STORE_PATH`를 현재 환경에 맞게 조정하세요. Artifact 경로는 mutable checkout과 겹치지 않는 지속 디렉터리여야 하며, DB와 함께 백업·복구해야 합니다.
 
 ## 로컬 개발
 
@@ -135,17 +133,24 @@ base_image: k3s-base:latest
 
 `setup.sh`는 고장 난 상태를 만들고, `verify.sh`는 해결 여부를 확인합니다. 검증 스크립트는 exit code 0을 성공으로, 1을 실패로 처리합니다. Kubernetes가 수렴하는 시간을 고려해 유한 폴링으로 작성하고, 조건을 확인하는 명령이 실패를 가리지 않도록 fail-closed 방식으로 작성하는 것을 권장합니다.
 
-문제 저장소에서 변경을 병합한 뒤 메인 저장소에서 `make problems-update`로 submodule 포인터를 갱신합니다. 이어서 Admin 화면에서 **Sync Problems**를 실행하거나 서버를 다시 시작하면 로더가 유효한 문제만 데이터베이스에 반영합니다. ID, 카테고리, 난이도, 검증 방식의 검증 규칙은 [구현 계획](PLAN.md)에 정리했습니다.
+문제 저장소에서 변경을 병합한 뒤 메인 저장소에서 `make problems-update`로 submodule 포인터를 갱신합니다. 변경된 checkout을 게시하려면 Admin 화면에서 **Sync Problems**를 명시적으로 실행해야 합니다. Sync는 `git pull`을 실행하지 않고, 검증된 전체 카탈로그를 PostgreSQL의 append-only generation ledger에 `head+1`로 게시합니다. 서버 시작은 ledger가 비어 있을 때만 generation 1을 bootstrap합니다. 이미 artifact-bound head가 있으면 checkout을 읽지 않고 PostgreSQL과 로컬 content-addressed store에서 그 generation을 복원하므로 checkout이 삭제되거나 달라져도 자동 게시·롤백하지 않습니다. 참조된 artifact가 없거나 손상됐거나 저장 projection과 다르면 신규 admission을 열지 않습니다.
+
+런타임 로더는 `problem.yaml`, setup/verify 스크립트와 Docker가 확인한 이미지 콘텐츠 ID를 하나의 revision으로 묶습니다. 이미지 태그가 다른 콘텐츠를 가리키면 revision도 바뀌며, 이전 revision으로 새 이미지를 실행하지 않습니다. 신규 세션은 현재 head의 `catalog_generation + problem_id + revision`에 결합되어 예약되므로 게시와 세션 선택의 provenance가 PostgreSQL에 남습니다. 이 revision과 generation은 실행 일관성을 위한 콘텐츠 식별자이며, 서명된 게시자 provenance나 공개 채점의 신뢰성을 보증하지는 않습니다.
+
+관리자 문제 생성·수정·삭제 API는 실행할 수 없는 metadata draft 전용입니다. revision이 있는 실행 문제의 게시·변경·은퇴는 원자적 Sync를 통해서만 가능합니다. 공개 목록과 신규 세션은 현재 catalog head의 문제만 사용합니다. `problems` 테이블의 비활성 행은 attempt 외래키를 보존하는 identity/latest-projection 행일 뿐이지만, 별도의 `problem_catalog_publications`와 `problem_catalog_entries`가 과거 generation의 exact metadata selection을 append-only로 보존합니다. canonical runtime artifact에는 manifest, setup/verifier/hint, `images.lock`, immutable runtime image ID와 전체 problem projection이 들어가며, `problem_artifacts`가 revision을 로컬 filesystem CAS의 exact digest에 불변으로 연결합니다. 이 CAS는 checkout 없는 재시작·과거 revision 복구를 위한 integrity store이지, 서명된 provenance·승인·폐기 정책이나 공개 신뢰 저장소는 아닙니다. 자세한 현재 보장과 남은 공개 게이트는 [ADR 002](docs/architecture/adr/002-problem-artifact-catalog.md)를 참고하세요.
 
 ## 운영 경계
 
 이 저장소는 Kubernetes 실습과 로컬 개발을 위한 프로젝트입니다. 백엔드가 Docker socket에 접근해 privileged k3s 컨테이너를 만들기 때문에, 신뢰할 수 있는 개인 개발 환경에서만 실행해야 합니다. 공개 인터넷에 그대로 배포하거나 다중 테넌트 서비스로 운영하기 위한 보안·격리·관측성 검증은 아직 범위에 포함하지 않았습니다.
 
-`POOL_SIZE`를 켜면 시작 시간은 줄일 수 있지만 warm 컨테이너가 기본 Docker 네트워크를 사용합니다. 그래서 기본값은 `0`이며, 네트워크 격리가 더 중요한 환경에서는 활성화하지 않는 편이 좋습니다.
+기존 `POOL_SIZE` 설정은 generation과 allocation 소유권을 보존하지 못하므로 현재 Runner에서는 `0`만 허용합니다. 0보다 큰 값이면 서버가 시작을 거부합니다.
+
+공개 서비스용 실행 환경은 별도 커널을 제공하는 Proxmox/KVM Runner로 옮기는 중입니다. 구현·격리·장애 복구의 공개 게이트가 통과되기 전까지 `local-docker`를 인터넷이나 홈 LAN에 노출하면 안 됩니다. 설계와 남은 게이트는 [Runner 플랫폼 아키텍처](docs/architecture/runner-platform.md)와 [공개 서비스 전환 로드맵](docs/public-service-roadmap.md)을 참고하세요.
 
 ## 더 읽기
 
 - [전체 구현 계획과 API/WebSocket 계약](PLAN.md)
+- [문제 artifact catalog와 공개 경계](docs/architecture/adr/002-problem-artifact-catalog.md)
 - [개발 과정과 Docker E2E 검증 기록](docs/development-history.md)
 - [환경 변수 예시](.env.example)
 - [CI 설정](.github/workflows/ci.yaml)

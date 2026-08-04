@@ -1,8 +1,11 @@
 # 공개 서비스 전환 로드맵
 
-> 상태: 초안 · 2026-07-26
+> 상태: 구현 진행 중 · 2026-08-01
 >
 > 목표: 누구나 GitHub 계정으로 가입해 Kubernetes 문제를 풀 수 있는 서비스를 만든다. 사용자가 여는 터미널과 k3s 환경은 서비스 본체나 다른 사용자의 환경을 침해할 수 없어야 한다.
+
+> 현재 판정은 `REDO / PUBLIC BLOCKED`다. 아래에서 완료로 표시한 항목은 코드나
+> 로컬 검증 경계만 통과했다는 뜻이며, 공개 배포 허가를 의미하지 않는다.
 
 ## 먼저 정할 원칙
 
@@ -21,9 +24,9 @@ CPU·메모리 제한만으로는 이 조건을 만족하지 못한다. 현재 �
 | 실습 실행 | 백엔드가 같은 Docker 호스트에 privileged k3s 컨테이너 생성 | Runner가 세션별 VM/MicroVM 생성·폐기 |
 | 권한 경계 | 사용자 셸과 서비스 호스트의 경계가 약함 | 사용자 셸은 VM 안에서만 root, 서비스 호스트에는 권한 없음 |
 | 네트워크 | 사용자별 Docker bridge, 외부 통신 가능 | 세션별 네트워크와 egress allowlist, 관리망 분리 |
-| 세션 상태 | 백엔드 메모리와 단일 WebSocket hub | PostgreSQL/Redis/큐 기반의 복구 가능한 상태 |
+| 세션 상태 | PostgreSQL generation·operation·event 원장과 단일 controller lease 구현 | 다중 인스턴스용 외부 event fan-out·작업 큐와 운영 복구 증거 |
 | 용량 제어 | 세션당 1 vCPU·1 GiB, 전역 상한 기본값 0 | 계정·IP·전체 쿼터, 대기열, 비용 한도 |
-| 운영 | 로컬 Compose | TLS, WAF, 백업, 모니터링, 배포 자동화, 감사 로그 |
+| 운영 | 로컬 Compose | 홈 Proxmox Runner부터 시작해 TLS, 백업, 모니터링, 배포 자동화, 감사 로그 적용 |
 
 근거 코드:
 
@@ -43,8 +46,10 @@ flowchart LR
   A <--> R["Redis\n세션 상태 · Pub/Sub"]
   A --> Q["세션 작업 큐"]
   Q --> C["Runner Controller\n비공개 관리망"]
-  C --> V["폐기형 VM 또는 MicroVM\n세션 1개"]
-  V --> K["k3s · 웹 터미널 · verify.sh"]
+  C --> V["폐기형 VM 또는 MicroVM\nlearner k3s · terminal · setup"]
+  C --> T["Trusted Verifier\nworker · credential broker"]
+  T --> O["Trusted per-session\nobservation API"]
+  V -. "learner node/workload" .-> O
 ```
 
 ### 역할 분리
@@ -52,32 +57,53 @@ flowchart LR
 - **Control Plane**: 로그인, 문제 목록, 세션 예약, 결과 저장, WebSocket 중계만 담당한다. 사용자 셸과 Docker socket에 접근하지 않는다.
 - **Runner Controller**: 인증된 내부 요청만 받고, 허용된 문제 ID로 세션 VM을 만든다. 사용자 입력으로 이미지, mount, 환경 변수, 실행 명령을 받지 않는다.
 - **Session VM/MicroVM**: k3s와 터미널을 실행한다. 세션이 끝나면 메모리와 디스크를 폐기한다.
+- **Trusted Verifier**: learner guest 밖에서 exact allocation/generation/revision을 관찰하고 인증된 receipt만 반환한다. learner root는 verifier 신원·credential과 trusted observation API 권한을 얻을 수 없다. guest 내부 `verify.sh`는 로컬 개발 증거일 뿐 공개 grade의 권위가 아니다.
 - **관리망**: Control Plane과 Runner 사이의 mTLS 또는 사설 네트워크다. 인터넷에서 Runner API를 호출할 수 없다.
 
 Firecracker는 컨테이너보다 강화된 워크로드 격리를 목적으로 하는 MicroVM 기술이다. 다만 실제 k3s를 해당 환경에서 안정적으로 기동할 수 있는지 작은 PoC로 먼저 확인해야 한다. [Firecracker 공식 문서](https://firecracker-microvm.github.io/)
 
 ## 작업 순서
 
-### P0 — 지금 공개하지 않고 개인 서버에서 검증
+### P0 — 홈서버에서 신뢰 사용자 대상으로 검증
 
-- [ ] 별도 VPS를 준비한다. 개인 데이터나 다른 서비스는 같은 호스트에 두지 않는다.
+- [ ] Proxmox 위에 Control Plane VM과 세션용 KVM VM 영역을 분리한다. 세션 VM에는 개인 데이터나 다른 서비스를 두지 않는다.
 - [ ] HTTPS 역방향 프록시를 추가하고, 외부에는 443만 연다. 8080, 5173, PostgreSQL, Docker API는 직접 공개하지 않는다.
 - [ ] 운영용 `FRONTEND_URL`, 강한 JWT secret, 강한 DB 비밀번호, GitHub OAuth callback URL을 설정한다.
+- [ ] 공개 모드 secret은 환경변수 값이 아니라 소유자 전용 regular file과 `*_FILE` 설정으로 주입하고, PostgreSQL은 `sslmode=verify-full`을 사용한다.
 - [ ] `MAX_CONCURRENT_SESSIONS=1`로 시작해 CPU·메모리·디스크 사용량을 측정한다.
-- [ ] 방화벽과 VPN/IP allowlist로 운영자만 접속하게 한다.
+- [x] Runner 계약과 `LocalDockerRunner` 개발 전용 경계를 만들고 공개 모드에서 Local Docker 선택을 거부한다.
+- [ ] 실제 공개 세션을 Proxmox KVM Runner로만 실행하고 Control Plane의 Docker socket을 제거한다.
+- [ ] 세션 VM에서 Proxmox 관리망·Control Plane·DB·홈 LAN/NAS/공유기·다른 세션으로 가는 통신을 차단한다.
+- [ ] 초기에는 초대된 신뢰 사용자와 낮은 동시 세션 제한으로 수명주기·격리·정리 증거를 수집한다.
 - [ ] 운영 환경의 `.env`, 백업, 로그가 Git에 추적되지 않는지 CI에서 검사한다.
 
-P0는 배포 연습 단계다. 이 단계가 끝나도 불특정 다수에게 공개하지 않는다.
+P0는 홈서버 배포 연습과 신뢰 베타 단계다. 이 단계가 끝나도 격리·정리
+테스트가 P1 기준을 통과하기 전에는 불특정 다수에게 공개하지 않는다.
 
 ### P1 — 공개 베타의 차단 조건 해소
 
 - [ ] Docker 기반 사용자 세션을 세션별 VM/MicroVM으로 교체한다.
 - [ ] Control Plane에서 Docker socket mount를 제거한다.
 - [ ] Runner API를 사설망으로 옮기고 mTLS 또는 workload identity로 인증한다.
+- [x] Control Plane lease/epoch와 mutation digest를 묶는 단회성 authority proof를 구현하고 별도 validator DB 역할로 소비한다.
+- [x] disabled listener의 runtime/Compose command를 정확한 25개 flag로 고정하고,
+  8개의 서로 다른 read-only bind secret, 전용·비공유 DB CA, 각 URL의 정확한
+  `sslrootcert`를 fail-closed로 검증한다. 이는 real Runner가 아니라 preflight
+  probe의 코드·로컬 artifact 경계다.
 - [ ] 세션 VM은 최대 실행 시간, CPU, 메모리, PID, 디스크, 파일 수 제한을 적용한다.
 - [ ] 세션 종료·타임아웃·Runner 장애 때 VM과 네트워크를 강제 정리한다.
 - [ ] 인터넷 egress를 기본 차단하고, DNS와 허용된 내부 이미지 레지스트리만 연다.
 - [ ] 이미지와 문제 의존성은 digest로 고정하고, CI에서 취약점 스캔한다.
+- [ ] 두 저장소의 clean commit과 빌드 입력을 이미지 digest에 묶는 signed
+  provenance, SBOM, 이미지 서명과 배포 시 검증을 적용한다.
+- [ ] native amd64/arm64에서 Runner listener의 seccomp, PostgreSQL TLS
+  preflight, mTLS 요청, SIGTERM 종료와 금지 syscall 차단을 검증한다.
+- [ ] 운영 인증서·validator credential의 발급, 회전, 폐기와 전용
+  PostgreSQL TLS 백업·복구를 리허설한다.
+- [x] listener infra build context를 default-deny하고 31개 파일 exact hash
+  inventory, 실제 Linux target test, binary-only scratch rootfs 검사를 적용한다.
+  현재 local arm64 image/binary hash는 working-tree 증거일 뿐 signed public
+  provenance가 아니다.
 - [ ] 문제 ID 외의 이미지명·명령·볼륨 경로가 Runner까지 전달되지 않도록 API 계약을 고정한다.
 
 ### P2 — 악용과 비용 제어
@@ -93,12 +119,20 @@ P0는 배포 연습 단계다. 이 단계가 끝나도 불특정 다수에게 �
 
 ### P3 — 다중 인스턴스와 복구
 
-- [ ] 활성 세션과 Runner 할당 상태를 DB에 저장한다.
+- [x] 활성 세션, generation, Runner 할당, operation, event를 PostgreSQL에 저장한다.
 - [ ] WebSocket 이벤트는 Redis Pub/Sub 같은 외부 브로커로 전달한다.
 - [ ] 백엔드를 무상태로 만들어 여러 인스턴스로 확장한다.
 - [ ] 주기적으로 DB의 세션 상태와 실제 VM 상태를 대조해 orphan VM을 정리한다.
 - [ ] PostgreSQL 백업, 복구 리허설, 마이그레이션 롤백 절차를 문서화한다.
 - [ ] health check, tracing, 오류 알림, 운영 감사 로그를 추가한다.
+
+### P3.5 — 비용을 통제한 클라우드 전환
+
+- [ ] Control Plane만 먼저 저가 VPS/클라우드로 옮기고 홈 Runner는 사설 overlay+mTLS로 유지할 수 있게 한다.
+- [ ] 홈 용량이 부족할 때 기본 동작은 대기열이며, 자동 클라우드 비용 지출이 아님을 보장한다.
+- [ ] 클라우드 Runner는 기존 Runner 계약과 동일한 conformance suite를 통과한다.
+- [ ] paid overflow는 명시적 활성화, 월 예산, 세션당 상한, 동시 할당 상한이 모두 설정된 경우에만 허용한다.
+- [ ] 활성 세션을 live migration하지 않고, 새 generation부터 provider 배치를 바꾼다.
 
 ### P4 — 사용자 데이터와 운영 정책
 
@@ -146,13 +180,22 @@ P0는 배포 연습 단계다. 이 단계가 끝나도 불특정 다수에게 �
 - [ ] 실행 자원과 비용 한도가 적용되고, 초과 시 자동 차단/알림이 동작한다.
 - [ ] 운영 secret, 로그, 백업, 문제 은행의 공개 범위를 점검했다.
 - [ ] 장애 시 세션 정리, DB 복구, Runner 장애 대응을 실제로 연습했다.
+- [ ] learner 외부 trusted verifier, 인증 receipt, learner-controlled API/credential 공격 시험을 통과했다.
+- [ ] clean commit 입력을 signed provenance, SBOM, 이미지 서명과 fresh digest pull에 결합하고 배포 시 검증한다.
+- [ ] native amd64/arm64에서 listener seccomp, PostgreSQL TLS, mTLS 요청, SIGTERM 종료와 금지 syscall 차단을 검증했다.
+- [ ] 운영 인증서·secret 회전/폐기와 전용 PostgreSQL TLS 백업·복구를 실제로 리허설했다.
 
 ## 첫 구현 단위
 
 다음 작업은 P1의 첫 vertical slice로 잡는다.
 
-1. `Runner` 인터페이스를 정의한다. `CreateSession(problemID, userID)`와 `DestroySession(sessionID)`만 노출하고 Docker 옵션을 노출하지 않는다.
-2. 기존 `ContainerManager`를 직접 호출하던 `session.Service`를 `Runner` 인터페이스로 바꾼다.
-3. 로컬 개발용 Docker Runner는 유지하되, production에서는 비활성화한다.
-4. disposable VM Runner PoC를 만들어 k3s 부팅, 터미널 연결, verify, 강제 삭제를 한 세션으로 검증한다.
-5. 그 PoC가 통과한 뒤에야 공개 베타용 배포 구성을 만든다.
+1. 완료: provider-neutral `Runner` 계약과 generation-bound lifecycle 원장을 구현했다.
+2. 완료: `session.Service`를 Runner 경계로 옮기고 Local Docker를 개발 전용으로 제한했다.
+3. 완료: VM-only private API의 TLS 1.3 mTLS, 단회성 authority proof, strict DB 역할과 durable Proxmox Store를 구현하고 하드웨어 없는 E2E를 통과했다. Control Plane에는 이를 전체 `Runner`로 가장하지 않는 VM-only 어댑터를 추가했고, private 저장소에는 모든 lifecycle을 거부하는 disabled preflight listener를 추가했다. transport, Proxmox adapter, PostgreSQL 보안 소유권을 분리했으며 listener의 production/test 의존 그래프에는 provider-effect package가 없음을 exact allowlist로 강제한다. 또한 정확한 25개 flag·8개 secret, 전용 DB CA와 exact `sslrootcert`, default-deny 31-file inventory, Linux target test, system CA 없는 binary-only scratch rootfs를 검증한다. 이는 operational Runner나 signed public release가 아니다.
+4. 진행 중: dedicated CA·API token, 고정 provider scope와 bounded UPID polling을
+   검증하는 hardware-free Proxmox HTTP client PoC를 추가했다. 다음은 현재 결합된
+   `Client`를 Provider-owned task flow로 버전업하고 target VMID·UPID·source template
+   revision·terminal result를 append-only 원장에 영속화하는 것이다. 그 뒤에만
+   Guest Gateway·외부 verifier를 연결해 disposable VM 한 세션의 부팅, 터미널,
+   실패/성공 검증, 강제 삭제와 완전한 부재 증거를 만든다.
+5. 그 vertical slice와 네트워크 격리 시험이 통과한 뒤에만 공개 베타용 배포 구성을 만든다.
