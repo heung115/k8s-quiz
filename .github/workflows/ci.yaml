@@ -11,39 +11,61 @@ on:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_USER: k8squiz_ci
+          POSTGRES_PASSWORD: k8squiz_ci
+          POSTGRES_DB: k8squiz_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U k8squiz_ci -d k8squiz_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RUNNER_TEST_DATABASE_URL: postgres://k8squiz_ci:k8squiz_ci@127.0.0.1:5432/k8squiz_ci?sslmode=disable
+      PROBLEM_CATALOG_TEST_DATABASE_URL: postgres://k8squiz_ci:k8squiz_ci@127.0.0.1:5432/k8squiz_ci?sslmode=disable
+      MIGRATION_TEST_DATABASE_URL: postgres://k8squiz_ci:k8squiz_ci@127.0.0.1:5432/k8squiz_ci?sslmode=disable
+      # Session recovery tests create and migrate a unique schema per test, so
+      # they can run beside the Runner store package without shared TRUNCATEs.
+      SESSION_RECOVERY_TEST_DATABASE_URL: postgres://k8squiz_ci:k8squiz_ci@127.0.0.1:5432/k8squiz_ci?sslmode=disable
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25'
+          go-version: '1.25.12'
           cache-dependency-path: backend/go.sum
       - name: Build
         working-directory: backend
         run: go build ./...
+      - name: Migrate PostgreSQL
+        working-directory: backend
+        run: go test ./pkg/dbmigrate -run '^TestEmbeddedMigrationsAgainstConfiguredDatabase$' -count=1 -v
       - name: Test (race)
         working-directory: backend
-        run: go test ./... -v -short -race
+        run: go test ./... -v -race -count=1
       - name: Vet
         working-directory: backend
         run: go vet ./...
-      - name: govulncheck (advisory)
-        continue-on-error: true
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          cd backend && govulncheck ./...
+      - name: govulncheck
+        working-directory: backend
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: '20'
+          node-version: '20.20.2'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
       - name: Install
@@ -55,14 +77,17 @@ jobs:
       - name: Test
         working-directory: frontend
         run: npm test
+      - name: Audit production dependencies
+        working-directory: frontend
+        run: npm run audit:prod
       - name: Build
         working-directory: frontend
         run: npm run build
 
   problems:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
       - name: Syntax (sh -n)
@@ -79,3 +104,9 @@ jobs:
             shellcheck -S error "$f" || fail=1
           done
           exit $fail
+      - name: Immutable runtime images
+        run: |
+          test -f problems/images.lock
+          test -f problems/hack/validate_images.py
+          python3 -m unittest discover -s problems/hack -p 'test_*.py'
+          sh hack/validate-image-pins.sh
