@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/k8s-quiz/backend/internal/runner"
 	"github.com/k8s-quiz/backend/internal/session"
 	"github.com/k8s-quiz/backend/pkg/middleware"
 	"github.com/k8s-quiz/backend/pkg/models"
@@ -45,6 +46,10 @@ func (m *mockRepo) List(ctx context.Context, category, difficulty, ptype string)
 	return out, nil
 }
 
+func (m *mockRepo) ListAll(ctx context.Context) ([]models.Problem, error) {
+	return m.List(ctx, "", "", "")
+}
+
 func (m *mockRepo) FindByID(ctx context.Context, id string) (*models.Problem, error) {
 	p, ok := m.problems[id]
 	if !ok {
@@ -53,12 +58,19 @@ func (m *mockRepo) FindByID(ctx context.Context, id string) (*models.Problem, er
 	return p, nil
 }
 
+func (m *mockRepo) FindAnyByID(ctx context.Context, id string) (*models.Problem, error) {
+	return m.FindByID(ctx, id)
+}
+
 func (m *mockRepo) Upsert(ctx context.Context, p *models.Problem) error {
 	m.problems[p.ID] = p
 	return nil
 }
 
 func (m *mockRepo) Delete(ctx context.Context, id string) error {
+	if problem, found := m.problems[id]; found && problem.Revision != "" {
+		return ErrCatalogManagedProblem
+	}
 	delete(m.problems, id)
 	return nil
 }
@@ -66,36 +78,66 @@ func (m *mockRepo) Delete(ctx context.Context, id string) error {
 type mockLoader struct {
 	problems []models.Problem
 	err      error
+	healthy  *bool
 }
 
-func (m *mockLoader) LoadAll(ctx context.Context) ([]models.Problem, error) {
-	return m.problems, m.err
+func (m *mockLoader) Sync(ctx context.Context) (int, error) {
+	return len(m.problems), m.err
+}
+
+func (m *mockLoader) Healthy() bool {
+	return m.healthy == nil || *m.healthy
 }
 
 type mockSession struct {
-	startResult string
-	startErr    error
-	verifyOK    bool
-	verifyLog   string
-	verifyErr   error
-	resetErr    error
-	current     *session.CurrentSession
+	startResult   string
+	startErr      error
+	startOp       string
+	startUser     string
+	startProblem  string
+	verifyOK      bool
+	verifyLog     string
+	verifyErr     error
+	verifyOp      string
+	choiceErr     error
+	choiceUser    string
+	choiceProblem string
+	choiceExpect  runner.SessionRef
+	choiceOp      string
+	choiceID      string
+	resetErr      error
+	resetResult   *session.CurrentSession
+	resetOp       string
+	resetProblem  string
+	resetExpected runner.SessionRef
+	current       *session.CurrentSession
 }
 
 func (m *mockSession) StartProblem(ctx context.Context, userID, problemID string) (string, error) {
 	return m.startResult, m.startErr
 }
+func (m *mockSession) StartProblemOperation(ctx context.Context, userID, problemID, operationID string) (*session.CurrentSession, error) {
+	m.startUser, m.startProblem, m.startOp = userID, problemID, operationID
+	return m.current, m.startErr
+}
 func (m *mockSession) GetCurrentSession(userID string) *session.CurrentSession {
 	return m.current
 }
-func (m *mockSession) Verify(ctx context.Context, userID string) (bool, string, error) {
+func (m *mockSession) Verify(ctx context.Context, userID, operationID string) (bool, string, error) {
+	m.verifyOp = operationID
 	return m.verifyOK, m.verifyLog, m.verifyErr
 }
-func (m *mockSession) SubmitChoice(ctx context.Context, userID, choiceID string) (bool, error) {
-	return choiceID == "b", nil
+func (m *mockSession) SubmitChoice(_ context.Context, userID, problemID string, expected runner.SessionRef, operationID, choiceID string) (bool, error) {
+	m.choiceUser, m.choiceProblem, m.choiceExpect = userID, problemID, expected
+	m.choiceOp, m.choiceID = operationID, choiceID
+	return choiceID == "b", m.choiceErr
 }
 func (m *mockSession) ResetEnvironment(ctx context.Context, userID string) error {
 	return m.resetErr
+}
+func (m *mockSession) ResetEnvironmentOperation(ctx context.Context, userID, problemID string, expected runner.SessionRef, operationID string) (*session.CurrentSession, error) {
+	m.resetProblem, m.resetExpected, m.resetOp = problemID, expected, operationID
+	return m.resetResult, m.resetErr
 }
 
 func authStub() gin.HandlerFunc {
@@ -105,18 +147,18 @@ func authStub() gin.HandlerFunc {
 	}
 }
 
-func setupTestRouter(repo ProblemRepository, loader ProblemLoader, sess SessionService) *gin.Engine {
+func setupTestRouter(repo ProblemRepository, syncer ProblemSyncer, sess SessionService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := NewHandler(repo, loader, sess)
+	h := NewHandler(repo, syncer, sess)
 	h.RegisterRoutes(r.Group("/api", authStub()))
 	return r
 }
 
-func setupAdminRouter(repo ProblemRepository, loader ProblemLoader, sess SessionService) *gin.Engine {
+func setupAdminRouter(repo ProblemRepository, syncer ProblemSyncer, sess SessionService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := NewHandler(repo, loader, sess)
+	h := NewHandler(repo, syncer, sess)
 	h.RegisterAdminRoutes(r.Group("/api", authStub()))
 	return r
 }
@@ -186,21 +228,56 @@ func TestGetProblem(t *testing.T) {
 	}
 }
 
+func TestPublicProblemReadsReturn503WhenCatalogIsUnhealthy(t *testing.T) {
+	healthy := false
+	repo := newMockRepo()
+	repo.problems["p1"] = &models.Problem{ID: "p1", Title: "One"}
+	syncer := &mockLoader{healthy: &healthy}
+	r := setupTestRouter(repo, syncer, &mockSession{})
+
+	for _, path := range []string{"/api/problems", "/api/problems/p1"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("GET %s status=%d body=%s, want 503", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestAdminProblemListRemainsAvailableWhenCatalogIsUnhealthy(t *testing.T) {
+	healthy := false
+	repo := newMockRepo()
+	repo.problems["draft"] = &models.Problem{ID: "draft", Title: "Draft"}
+	r := setupAdminRouter(repo, &mockLoader{healthy: &healthy}, &mockSession{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/problems", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin list status=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+}
+
 func TestStartProblem(t *testing.T) {
 	repo := newMockRepo()
 	timeoutAt := time.Now().Add(30 * time.Minute).Truncate(time.Second)
 	sess := &mockSession{
 		startResult: "session-abc",
 		current: &session.CurrentSession{
-			SessionID: "session-abc",
-			ProblemID: "p1",
-			Status:    session.StatusBooting,
-			TimeoutAt: timeoutAt,
+			OperationID:   "operation-12345678",
+			SessionID:     "session-abc",
+			ProblemID:     "p1",
+			Generation:    1,
+			Status:        session.StatusBooting,
+			TimeoutAt:     timeoutAt,
+			EventSequence: 2,
 		},
 	}
 	r := setupTestRouter(repo, &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
+	req.Header.Set("Idempotency-Key", "operation-12345678")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -209,16 +286,23 @@ func TestStartProblem(t *testing.T) {
 	}
 	// Start must return the same shape as GET /api/sessions/current.
 	var body struct {
-		SessionID string    `json:"session_id"`
-		ProblemID string    `json:"problem_id"`
-		Status    string    `json:"status"`
-		TimeoutAt time.Time `json:"timeout_at"`
+		RequestID     string    `json:"request_id"`
+		OperationID   string    `json:"operation_id"`
+		SessionID     string    `json:"session_id"`
+		ProblemID     string    `json:"problem_id"`
+		Generation    uint64    `json:"generation"`
+		Status        string    `json:"status"`
+		TimeoutAt     time.Time `json:"timeout_at"`
+		EventSequence uint64    `json:"event_sequence"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if body.SessionID != "session-abc" {
+	if body.RequestID != "operation-12345678" || body.OperationID != "operation-12345678" || body.SessionID != "session-abc" || body.Generation != 1 || body.EventSequence != 2 {
 		t.Errorf("expected session-abc, got %s", body.SessionID)
+	}
+	if sess.startUser != "user-1" || sess.startProblem != "p1" || sess.startOp != "operation-12345678" {
+		t.Fatalf("start operation was not forwarded exactly: user=%q problem=%q op=%q", sess.startUser, sess.startProblem, sess.startOp)
 	}
 	if body.ProblemID != "p1" || body.Status != "booting" {
 		t.Errorf("unexpected session shape: %+v", body)
@@ -233,6 +317,7 @@ func TestStartProblemNoSessionAfterStart(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
+	req.Header.Set("Idempotency-Key", "operation-12345678")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -246,6 +331,7 @@ func TestStartProblemError(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
+	req.Header.Set("Idempotency-Key", "operation-12345678")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -254,11 +340,33 @@ func TestStartProblemError(t *testing.T) {
 	}
 }
 
+func TestStartProblemRequiresValidIdempotencyKeyBeforeServiceMutation(t *testing.T) {
+	for _, key := range []string{"", "short", "contains space"} {
+		t.Run(key, func(t *testing.T) {
+			sess := &mockSession{current: &session.CurrentSession{SessionID: "must-not-return"}}
+			r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+			req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/start", nil)
+			if key != "" {
+				req.Header.Set("Idempotency-Key", key)
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("key %q status=%d, want 400", key, w.Code)
+			}
+			if sess.startOp != "" {
+				t.Fatalf("key %q reached service as %q", key, sess.startOp)
+			}
+		})
+	}
+}
+
 func TestVerify(t *testing.T) {
 	sess := &mockSession{verifyOK: true, verifyLog: "SUCCESS"}
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/verify", nil)
+	req.Header.Set("Idempotency-Key", "verify-operation-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -276,6 +384,9 @@ func TestVerify(t *testing.T) {
 	if body.Log != "SUCCESS" {
 		t.Errorf("expected log SUCCESS, got %s", body.Log)
 	}
+	if sess.verifyOp != "verify-operation-1" {
+		t.Errorf("handler passed operation id %q", sess.verifyOp)
+	}
 }
 
 func TestVerifyError(t *testing.T) {
@@ -283,6 +394,7 @@ func TestVerifyError(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/verify", nil)
+	req.Header.Set("Idempotency-Key", "verify-operation-2")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -295,8 +407,9 @@ func TestSubmitChoice(t *testing.T) {
 	sess := &mockSession{}
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
-	req := httptest.NewRequest("POST", "/api/problems/p1/submit", strings.NewReader(`{"choice_id":"b"}`))
+	req := httptest.NewRequest("POST", "/api/problems/p1/submit", strings.NewReader(`{"session_id":"session-1","generation":3,"choice_id":"b"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "choice-operation-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -304,11 +417,26 @@ func TestSubmitChoice(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var body struct {
-		Success bool `json:"success"`
+		RequestID  string `json:"request_id"`
+		ProblemID  string `json:"problem_id"`
+		SessionID  string `json:"session_id"`
+		Generation uint64 `json:"generation"`
+		Success    bool   `json:"success"`
 	}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
 	if !body.Success {
 		t.Error("expected correct choice success")
+	}
+	if body.RequestID != "choice-operation-1" || body.ProblemID != "p1" ||
+		body.SessionID != "session-1" || body.Generation != 3 {
+		t.Fatalf("unexpected choice response identity: %+v", body)
+	}
+	if sess.choiceUser != "user-1" || sess.choiceProblem != "p1" ||
+		sess.choiceExpect != (runner.SessionRef{SessionID: "session-1", Generation: 3}) ||
+		sess.choiceOp != "choice-operation-1" || sess.choiceID != "b" {
+		t.Fatalf("handler passed incomplete choice identity: %+v", sess)
 	}
 }
 
@@ -316,6 +444,7 @@ func TestSubmitChoiceMissingID(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, &mockSession{})
 	req := httptest.NewRequest("POST", "/api/problems/p1/submit", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "choice-operation-2")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -415,12 +544,98 @@ func TestAdminListKeepsAnswers(t *testing.T) {
 	}
 }
 
+func approvedRuntimeProblem() *models.Problem {
+	return &models.Problem{
+		ID:             "approved",
+		Revision:       "trusted-revision",
+		Title:          "Original title",
+		TimeoutMinutes: 25,
+		VerifyType:     "choice",
+		BaseImage:      "trusted-base:v1",
+		Image:          "trusted-image:v1",
+		Choices:        []models.Choice{{ID: "a", Text: "A"}, {ID: "b", Text: "B"}},
+		CorrectChoice:  "b",
+		GradingPrompt:  "trusted rubric",
+	}
+}
+
+func assertApprovedRuntimePreserved(t *testing.T, p *models.Problem) {
+	t.Helper()
+	if p.Revision != "trusted-revision" || p.TimeoutMinutes != 25 || p.VerifyType != "choice" ||
+		p.BaseImage != "trusted-base:v1" || p.Image != "trusted-image:v1" ||
+		len(p.Choices) != 2 || p.CorrectChoice != "b" || p.GradingPrompt != "trusted rubric" {
+		t.Fatalf("approved runtime fields changed: %+v", p)
+	}
+}
+
+func TestAdminCreateCannotOverwriteApprovedRuntimeFields(t *testing.T) {
+	repo := newMockRepo()
+	repo.problems["approved"] = approvedRuntimeProblem()
+	r := setupAdminRouter(repo, &mockLoader{}, &mockSession{})
+	body := `{
+		"id":"approved","title":"Editable metadata","timeout_minutes":99,
+		"verify_type":"script","base_image":"attacker-base:latest","image":"attacker:latest",
+		"choices":[{"id":"x","text":"X"},{"id":"y","text":"Y"}],
+		"correct_choice":"x","grading_prompt":"attacker rubric"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/problems", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	assertApprovedRuntimePreserved(t, repo.problems["approved"])
+	if repo.problems["approved"].Title != "Original title" {
+		t.Fatalf("catalog-managed metadata changed: %+v", repo.problems["approved"])
+	}
+}
+
+func TestAdminUpdateCannotOverwriteApprovedRuntimeFields(t *testing.T) {
+	repo := newMockRepo()
+	repo.problems["approved"] = approvedRuntimeProblem()
+	r := setupAdminRouter(repo, &mockLoader{}, &mockSession{})
+	body := `{
+		"title":"Updated title","timeout_minutes":99,
+		"verify_type":"script","base_image":"attacker-base:latest","image":"attacker:latest",
+		"choices":[{"id":"x","text":"X"},{"id":"y","text":"Y"}],
+		"correct_choice":"x","grading_prompt":"attacker rubric"
+	}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/problems/approved", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	assertApprovedRuntimePreserved(t, repo.problems["approved"])
+	if repo.problems["approved"].Title != "Original title" {
+		t.Fatalf("catalog-managed metadata changed: %+v", repo.problems["approved"])
+	}
+}
+
+func TestAdminDeleteRejectsCatalogManagedProblem(t *testing.T) {
+	repo := newMockRepo()
+	repo.problems["approved"] = approvedRuntimeProblem()
+	r := setupAdminRouter(repo, &mockLoader{}, &mockSession{})
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/problems/approved", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	if _, found := repo.problems["approved"]; !found {
+		t.Fatal("catalog-managed problem was deleted")
+	}
+}
+
 // SESS-3: the Start handler maps session sentinel errors to 429.
 func TestStartProblemCapacity429(t *testing.T) {
 	sess := &mockSession{startErr: session.ErrTooManySessions}
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
+	req.Header.Set("Idempotency-Key", "operation-capacity-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -434,11 +649,36 @@ func TestStartProblemCapacity429(t *testing.T) {
 	}
 }
 
+func TestStartProblemBusy429(t *testing.T) {
+	sess := &mockSession{startErr: session.ErrTransitionBusy}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+	req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/start", nil)
+	req.Header.Set("Idempotency-Key", "operation-busy-12345678")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("busy start status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStartProblemCatalogAdmissionUnavailable503(t *testing.T) {
+	sess := &mockSession{startErr: errors.Join(errors.New("resolve active problem"), ErrCatalogAdmissionUnavailable)}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+	req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/start", nil)
+	req.Header.Set("Idempotency-Key", "operation-catalog-unavailable")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("catalog admission status=%d body=%s, want 503", w.Code, w.Body.String())
+	}
+}
+
 func TestStartProblemCooldown429(t *testing.T) {
 	sess := &mockSession{startErr: session.ErrStartCooldown}
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
+	req.Header.Set("Idempotency-Key", "operation-cooldown-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -458,6 +698,7 @@ func TestVerifyTooFast429(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/verify", nil)
+	req.Header.Set("Idempotency-Key", "verify-operation-3")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -471,16 +712,194 @@ func TestVerifyTooFast429(t *testing.T) {
 	}
 }
 
+func TestVerifyTransitionBusy429(t *testing.T) {
+	sess := &mockSession{verifyErr: session.ErrTransitionBusy}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+	req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/verify", nil)
+	req.Header.Set("Idempotency-Key", "verify-operation-busy")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+}
+
+func TestVerifyInfrastructureFailureAcceptsColonKeyAndReturns503(t *testing.T) {
+	const operationID = "verify:user-1:operation-4"
+	sess := &mockSession{verifyErr: session.ErrVerifyInfrastructure}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+	req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/verify", nil)
+	req.Header.Set("Idempotency-Key", operationID)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("infrastructure verify status=%d body=%s", w.Code, w.Body.String())
+	}
+	if sess.verifyOp != operationID {
+		t.Fatalf("colon operation key reached service as %q", sess.verifyOp)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != "verification service was unavailable; start a new verification" {
+		t.Fatalf("unexpected infrastructure error body: %q", body["error"])
+	}
+}
+
+func TestSubmitChoiceTransitionBusy429(t *testing.T) {
+	sess := &mockSession{choiceErr: session.ErrTransitionBusy}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+	req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/submit", strings.NewReader(`{"session_id":"session-1","generation":1,"choice_id":"b"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "choice-operation-busy")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+}
+
 // SEC3-5: reset cooldown maps to 429.
 func TestResetTooFast429(t *testing.T) {
 	sess := &mockSession{resetErr: session.ErrStartCooldown}
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
-	req := httptest.NewRequest("POST", "/api/problems/p1/reset", nil)
+	req := httptest.NewRequest("POST", "/api/problems/p1/reset", strings.NewReader(`{"session_id":"session-abc","source_generation":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "reset-operation-cooldown")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", w.Code)
+	}
+}
+
+func TestResetCleanupPendingReturnsAcceptedOperationSnapshot(t *testing.T) {
+	timeoutAt := time.Now().Add(20 * time.Minute).Truncate(time.Second)
+	sess := &mockSession{
+		resetErr: session.ErrCleanupPending,
+		resetResult: &session.CurrentSession{
+			OperationID: "durable-reset-operation", SessionID: "session-abc", ProblemID: "p1",
+			Generation: 2, Status: session.StatusCreating, TimeoutAt: timeoutAt, CleanupPending: true,
+		},
+	}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+	req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/reset", strings.NewReader(`{"session_id":"session-abc","source_generation":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "reset-operation-pending-12345678")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("pending reset status=%d body=%s", w.Code, w.Body.String())
+	}
+	var body session.CurrentSession
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.RequestID != "reset-operation-pending-12345678" || body.OperationID != "durable-reset-operation" ||
+		body.SessionID != "session-abc" || body.Generation != 2 || body.Status != session.StatusCreating ||
+		!body.CleanupPending || !body.TimeoutAt.Equal(timeoutAt) {
+		t.Fatalf("pending reset response=%+v", body)
+	}
+}
+
+func TestResetDuringShutdown503(t *testing.T) {
+	sess := &mockSession{resetErr: session.ErrServiceStopping}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+
+	req := httptest.NewRequest("POST", "/api/problems/p1/reset", strings.NewReader(`{"session_id":"session-abc","source_generation":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "reset-operation-shutdown")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 during shutdown, got %d", w.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["error"] != "server is shutting down" {
+		t.Fatalf("unexpected error message: %q", body["error"])
+	}
+}
+
+func TestResetRequiresValidIdempotencyKeyBeforeServiceMutation(t *testing.T) {
+	for _, key := range []string{"", "short", "contains space"} {
+		t.Run(key, func(t *testing.T) {
+			sess := &mockSession{resetResult: &session.CurrentSession{SessionID: "must-not-return"}}
+			r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+			req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/reset", strings.NewReader(`{"session_id":"session-abc","source_generation":1}`))
+			req.Header.Set("Content-Type", "application/json")
+			if key != "" {
+				req.Header.Set("Idempotency-Key", key)
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("key %q status=%d, want 400", key, w.Code)
+			}
+			if sess.resetOp != "" {
+				t.Fatalf("key %q reached reset service as %q", key, sess.resetOp)
+			}
+		})
+	}
+}
+
+func TestResetReturnsOperationBoundReplacementSnapshot(t *testing.T) {
+	timeoutAt := time.Now().Add(20 * time.Minute).Truncate(time.Second)
+	sess := &mockSession{resetResult: &session.CurrentSession{
+		OperationID: "reset-operation-12345678", SessionID: "session-abc", ProblemID: "p1",
+		Generation: 2, Status: session.StatusBooting, TimeoutAt: timeoutAt,
+	}}
+	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+	req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/reset", strings.NewReader(`{"session_id":"session-abc","source_generation":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "reset-operation-12345678")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset status=%d body=%s", w.Code, w.Body.String())
+	}
+	var body session.CurrentSession
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.RequestID != "reset-operation-12345678" || body.OperationID != "reset-operation-12345678" || body.SessionID != "session-abc" || body.Generation != 2 ||
+		body.ProblemID != "p1" || !body.TimeoutAt.Equal(timeoutAt) {
+		t.Fatalf("reset snapshot=%+v", body)
+	}
+	if sess.resetOp != "reset-operation-12345678" {
+		t.Fatalf("reset operation forwarded as %q", sess.resetOp)
+	}
+	if sess.resetProblem != "p1" {
+		t.Fatalf("reset problem forwarded as %q", sess.resetProblem)
+	}
+	if sess.resetExpected != (runner.SessionRef{SessionID: "session-abc", Generation: 1}) {
+		t.Fatalf("reset precondition forwarded as %+v", sess.resetExpected)
+	}
+}
+
+func TestResetRequiresSourcePreconditionBeforeServiceMutation(t *testing.T) {
+	for _, body := range []string{"", `{}`, `{"session_id":"session-abc"}`, `{"source_generation":1}`, `{"session_id":"session-abc","source_generation":0}`} {
+		t.Run(body, func(t *testing.T) {
+			sess := &mockSession{}
+			r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
+			req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/reset", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "reset-operation-12345678")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("body %q status=%d, want 400", body, w.Code)
+			}
+			if sess.resetOp != "" {
+				t.Fatalf("body %q reached reset service", body)
+			}
+		})
 	}
 }

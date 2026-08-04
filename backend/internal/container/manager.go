@@ -7,6 +7,7 @@ import (
 )
 
 type CreateOpts struct {
+	Name        string
 	Image       string
 	Labels      map[string]string
 	Env         []string
@@ -20,6 +21,43 @@ type ExecResult struct {
 	ExitCode int
 	Stdout   string
 	Stderr   string
+}
+
+// OwnedAllocationObservation is the provider-private result of inspecting one
+// deterministic container/network pair. OwnershipComplete is false whenever a
+// present resource does not carry the exact immutable ownership label set.
+// Callers must never mutate a resource when it is false.
+type OwnedAllocationObservation struct {
+	ContainerPresent  bool
+	NetworkPresent    bool
+	OwnershipComplete bool
+}
+
+// OwnedAllocationHandle is provider-private physical identity captured at
+// create time. Names are discovery aids only; mutation is authorized solely
+// against these immutable IDs plus the approved create specification.
+type OwnedAllocationHandle struct {
+	ContainerID string
+	NetworkID   string
+}
+
+type OwnedAllocationTarget struct {
+	Handle OwnedAllocationHandle
+	Create CreateOpts
+}
+
+type OwnedAllocationRemoval struct {
+	Before OwnedAllocationObservation
+	After  OwnedAllocationObservation
+}
+
+// OwnedAllocationManager is the stronger LocalDockerRunner capability. The
+// ordinary Manager methods remain for the development warm pool, but Runner
+// lifecycle code must never fall back to name-only removal.
+type OwnedAllocationManager interface {
+	CreateOwnedAllocation(context.Context, CreateOpts) (OwnedAllocationHandle, error)
+	InspectOwnedAllocation(context.Context, OwnedAllocationTarget) (OwnedAllocationObservation, error)
+	RemoveOwnedAllocation(context.Context, OwnedAllocationTarget) (OwnedAllocationRemoval, error)
 }
 
 type TerminalSession interface {

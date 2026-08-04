@@ -2,16 +2,39 @@ package problem
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
+	"github.com/k8s-quiz/backend/internal/runner"
 	"github.com/k8s-quiz/backend/pkg/models"
 )
+
+type mutableImageResolver struct {
+	mu   sync.Mutex
+	id   string
+	err  error
+	refs []string
+}
+
+func (r *mutableImageResolver) ResolveImage(_ context.Context, ref string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refs = append(r.refs, ref)
+	return r.id, r.err
+}
+
+func imageID(digit byte) string {
+	return "sha256:" + strings.Repeat(string(digit), 64)
+}
 
 func setupTestProblems(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "images.lock"), []byte("test=test/image:v1@"+imageID('f')+"\n"), 0644)
 
 	problemDir := filepath.Join(dir, "test-problem")
 	os.MkdirAll(problemDir, 0755)
@@ -168,6 +191,280 @@ func TestGetVerifyScript(t *testing.T) {
 	}
 	if script != "#!/bin/sh\nexit 0" {
 		t.Errorf("unexpected script content: %s", script)
+	}
+}
+
+func TestRuntimeBundleRevisionIsDeterministicAndTracksRuntimeFiles(t *testing.T) {
+	dir := setupTestProblems(t)
+	loader := NewGitLoader(dir)
+	first, err := loader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision == "" || first.Revision != second.Revision || first.Problem.Revision != first.Revision {
+		t.Fatalf("revision is not stable/bound to problem: first=%q second=%q problem=%q", first.Revision, second.Revision, first.Problem.Revision)
+	}
+
+	verifyPath := filepath.Join(dir, "test-problem", "verify.sh")
+	if err := os.WriteFile(verifyPath, []byte("#!/bin/sh\nexit 1"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := loader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Revision == first.Revision {
+		t.Fatal("verify.sh change did not change runtime revision")
+	}
+
+	if err := os.Remove(verifyPath); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := loader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(verifyPath, nil, 0755); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := loader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Revision == empty.Revision {
+		t.Fatal("missing and present-empty verify.sh must have different revisions")
+	}
+
+	hintPath := filepath.Join(dir, "test-problem", "hint.md")
+	if err := os.WriteFile(hintPath, []byte("changed approved hint"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	hintChanged, err := loader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hintChanged.Revision == empty.Revision {
+		t.Fatal("hint.md change did not change approved problem revision")
+	}
+}
+
+func TestResolveRuntimeRejectsRevisionMismatch(t *testing.T) {
+	dir := setupTestProblems(t)
+	loader := NewGitLoader(dir)
+	bundle, err := loader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := loader.ResolveRuntime(context.Background(), runner.ProblemRef{ID: "test-problem", Revision: bundle.Revision})
+	if err != nil {
+		t.Fatalf("ResolveRuntime approved revision: %v", err)
+	}
+	if runtime.Revision != bundle.Revision || runtime.VerifyScript != bundle.VerifyScript {
+		t.Fatalf("runtime is not the approved bundle snapshot: %+v", runtime)
+	}
+	if _, err := loader.ResolveRuntime(context.Background(), runner.ProblemRef{ID: "test-problem", Revision: "stale"}); !errors.Is(err, runner.ErrInvalidRevision) {
+		t.Fatalf("stale revision error = %v, want ErrInvalidRevision", err)
+	}
+}
+
+func TestRuntimeLoaderBindsImmutableImageAcrossRestart(t *testing.T) {
+	dir := setupTestProblems(t)
+	firstResolver := &mutableImageResolver{id: imageID('1')}
+	firstLoader, err := NewRuntimeGitLoader(dir, firstResolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := firstLoader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := firstLoader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision != again.Revision || first.RuntimeImage != imageID('1') {
+		t.Fatalf("same files and image ID were not stable: first=%+v again=%+v", first, again)
+	}
+	activateSnapshotProblem(t, firstLoader, "test-problem")
+	runtime, err := firstLoader.ResolveRuntime(context.Background(), runner.ProblemRef{ID: "test-problem", Revision: first.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Image != imageID('1') {
+		t.Fatalf("runtime image = %q, want immutable content ID", runtime.Image)
+	}
+
+	// A new loader models a server restart after the authored tag moved.
+	secondResolver := &mutableImageResolver{id: imageID('2')}
+	secondLoader, err := NewRuntimeGitLoader(dir, secondResolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := secondLoader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Revision == first.Revision {
+		t.Fatal("moved image tag did not change the approved problem revision")
+	}
+	if _, err := secondLoader.ResolveRuntime(context.Background(), runner.ProblemRef{ID: "test-problem", Revision: first.Revision}); !errors.Is(err, runner.ErrInvalidRevision) {
+		t.Fatalf("old revision after image move error = %v, want ErrInvalidRevision", err)
+	}
+}
+
+func TestRuntimeLoaderFailsClosedOnImageResolution(t *testing.T) {
+	dir := setupTestProblems(t)
+	if _, err := NewRuntimeGitLoader(dir, nil); err == nil {
+		t.Fatal("nil image resolver was accepted")
+	}
+
+	resolver := &mutableImageResolver{err: errors.New("image missing")}
+	loader, err := NewRuntimeGitLoader(dir, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loader.BuildCandidate(context.Background()); err == nil || !strings.Contains(err.Error(), "image missing") {
+		t.Fatalf("strict candidate error = %v, want image resolution failure", err)
+	}
+
+	resolver.err = nil
+	resolver.id = "sha256:not-a-digest"
+	if _, err := loader.GetRuntimeBundle("test-problem"); err == nil || !strings.Contains(err.Error(), "non-content-addressed") {
+		t.Fatalf("non-content-addressed image error = %v", err)
+	}
+}
+
+func TestRuntimeLoaderSkipsSupportDirectoriesWithoutProblemManifest(t *testing.T) {
+	dir := setupTestProblems(t)
+	if err := os.MkdirAll(filepath.Join(dir, "hack"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hack", "validate.py"), []byte("print('ok')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	loader, err := NewRuntimeGitLoader(dir, &mutableImageResolver{id: imageID('a')})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := loader.BuildCandidate(context.Background())
+	if err != nil {
+		t.Fatalf("runtime loader rejected support directory: %v", err)
+	}
+	problems := candidate.Problems()
+	if len(problems) != 2 {
+		t.Fatalf("runtime loader returned %d problems, want 2", len(problems))
+	}
+}
+
+func TestRuntimeLoaderFailsClosedOnManifestIdentityMismatch(t *testing.T) {
+	dir := setupTestProblems(t)
+	manifest := filepath.Join(dir, "test-problem", "problem.yaml")
+	data, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), "id: test-problem", "id: different-problem", 1))
+	if err := os.WriteFile(manifest, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	loader, err := NewRuntimeGitLoader(dir, &mutableImageResolver{id: imageID('a')})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loader.BuildCandidate(context.Background()); err == nil || !strings.Contains(err.Error(), "contains id") {
+		t.Fatalf("runtime manifest identity mismatch error = %v", err)
+	}
+}
+
+func TestStrictRuntimeLoadAllRequiresCatalogCoordinator(t *testing.T) {
+	loader := newSnapshotRuntimeLoader(t, setupTestProblems(t))
+	if _, err := loader.LoadAll(context.Background()); !errors.Is(err, ErrRuntimeCatalogCoordinator) {
+		t.Fatalf("strict LoadAll error = %v, want ErrRuntimeCatalogCoordinator", err)
+	}
+}
+
+func TestRuntimeLoaderRejectsMutableWorkloadImages(t *testing.T) {
+	dir := setupTestProblems(t)
+	loader, err := NewRuntimeGitLoader(dir, &mutableImageResolver{id: imageID('a')})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupPath := filepath.Join(dir, "test-problem", "setup.sh")
+	if err := os.WriteFile(setupPath, []byte("#!/bin/sh\ncat <<'YAML'\n  image: nginx:alpine\nYAML\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loader.GetRuntimeBundle("test-problem"); err == nil || !strings.Contains(err.Error(), "not an exact images.lock entry") {
+		t.Fatalf("mutable workload image error = %v", err)
+	}
+
+	pinned := "nginx:alpine@" + imageID('b')
+	if err := os.WriteFile(filepath.Join(dir, "images.lock"), []byte("nginx="+pinned+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(setupPath, []byte("#!/bin/sh\ncat <<'YAML'\n  image: "+pinned+"\nYAML\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loader.GetRuntimeBundle("test-problem"); err != nil {
+		t.Fatalf("digest-pinned workload image rejected: %v", err)
+	}
+}
+
+func TestApprovedImagePolicyCoversFlagsAndUnsupportedMutations(t *testing.T) {
+	pinned := "nginx:stable@" + imageID('c')
+	policy, err := parseApprovedImagePolicy([]byte("nginx=" + pinned + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"setup.sh":     []byte("kubectl create deployment web --image=nginx:latest\n"),
+		"verify.sh":    nil,
+		"problem.yaml": nil,
+		"hint.md":      nil,
+	}
+	if err := validateApprovedImagePolicy(files, policy); err == nil || !strings.Contains(err.Error(), "nginx:latest") {
+		t.Fatalf("mutable --image flag error = %v", err)
+	}
+	files["setup.sh"] = []byte("kubectl create deployment web --image=" + pinned + "\n")
+	if err := validateApprovedImagePolicy(files, policy); err != nil {
+		t.Fatalf("pinned --image flag rejected: %v", err)
+	}
+	for _, script := range []string{
+		"kubectl set image deployment/web web=" + pinned,
+		"helm upgrade web chart --set image.repository=nginx",
+		"kustomize build . | kubectl apply -f -",
+		"kubectl apply -f https://example.invalid/workload.yaml",
+		"cat <<YAML\nimage: $IMAGE\nYAML",
+	} {
+		files["setup.sh"] = []byte(script + "\n")
+		if err := validateApprovedImagePolicy(files, policy); err == nil {
+			t.Fatalf("unsupported image path was accepted: %q", script)
+		}
+	}
+}
+
+func TestRuntimeRevisionTracksImagesLock(t *testing.T) {
+	dir := setupTestProblems(t)
+	loader, err := NewRuntimeGitLoader(dir, &mutableImageResolver{id: imageID('a')})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := loader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "images.lock"), []byte("test=test/image:v2@"+imageID('e')+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := loader.GetRuntimeBundle("test-problem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision == second.Revision {
+		t.Fatal("images.lock change did not change runtime revision")
 	}
 }
 

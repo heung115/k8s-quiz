@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,9 +25,13 @@ func wsServer(t *testing.T, hub *Hub) *httptest.Server {
 		client := &Client{
 			UserID: r.URL.Query().Get("user"),
 			Conn:   conn,
-			Send:   make(chan []byte, 16),
+			Send:   make(chan []byte, 256),
 		}
-		hub.Register(client)
+		if !hub.Register(client) {
+			client.Close()
+			return
+		}
+		go client.WritePump()
 		// keep the handler alive until the connection dies
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
@@ -119,6 +124,8 @@ func TestHubReplacesExistingConnection(t *testing.T) {
 	old.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, _, err := old.ReadMessage(); err == nil {
 		t.Fatal("old connection still readable, want closed")
+	} else if closeErr, ok := err.(*websocket.CloseError); !ok || closeErr.Code != CloseConnectionReplaced {
+		t.Fatalf("old connection close=%v, want code %d", err, CloseConnectionReplaced)
 	}
 }
 
@@ -187,6 +194,144 @@ func TestHubBroadcast(t *testing.T) {
 		if m.Type != MsgSessionEnded || m.Reason != "server_restart" {
 			t.Errorf("%s: expected session_ended/server_restart, got %+v", user, m)
 		}
+	}
+}
+
+func TestHubCloseAllClosesAndRemovesEveryClient(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+	srv := wsServer(t, hub)
+
+	conn1 := dial(t, srv, "u1")
+	conn2 := dial(t, srv, "u2")
+	waitForClient(t, hub, "u1")
+	waitForClient(t, hub, "u2")
+	hub.CloseAll()
+	if hub.GetClient("u1") != nil || hub.GetClient("u2") != nil {
+		t.Fatal("CloseAll retained clients")
+	}
+	for user, conn := range map[string]*websocket.Conn{"u1": conn1, "u2": conn2} {
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		if _, _, err := conn.ReadMessage(); err == nil {
+			t.Fatalf("%s socket remained open after CloseAll", user)
+		}
+	}
+}
+
+func TestHubCloseAllPermanentlyClosesRegistration(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+	hub.CloseAll()
+	client := &Client{UserID: "u1", LeaseID: "lease-1"}
+	if hub.Register(client) {
+		t.Fatal("hub accepted a terminal after CloseAll")
+	}
+	if hub.GetClient("u1") != nil {
+		t.Fatal("rejected terminal remained registered")
+	}
+}
+
+func TestHubReplaceIfCurrentRejectsLateCandidate(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+	first := &Client{UserID: "u1", LeaseID: "lease-1"}
+	if !hub.Register(first) {
+		t.Fatal("register first client")
+	}
+	second := &Client{UserID: "u1", LeaseID: "lease-2"}
+	if !hub.ReplaceIfCurrent(second, first) {
+		t.Fatal("replace exact first client")
+	}
+	late := &Client{UserID: "u1", LeaseID: "lease-late"}
+	if hub.ReplaceIfCurrent(late, first) {
+		t.Fatal("late candidate replaced a newer owner")
+	}
+	if got := hub.GetClient("u1"); got != second {
+		t.Fatalf("hub owner = %p, want second %p", got, second)
+	}
+	hub.CloseAll()
+}
+
+func TestHubDetachedReplacementPublishesBeforeDisplacedClose(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+	first := &Client{UserID: "u1", LeaseID: "lease-1"}
+	if !hub.Register(first) {
+		t.Fatal("register first client")
+	}
+	second := &Client{UserID: "u1", LeaseID: "lease-2"}
+	start := time.Now()
+	result := hub.replaceIfCurrentContextDetached(context.Background(), second, first)
+	if !result.accepted || result.displaced != first {
+		t.Fatalf("detached replacement result = %+v", result)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("atomic Hub replacement waited for displaced close: %v", elapsed)
+	}
+	if got := hub.GetClient("u1"); got != second {
+		t.Fatalf("hub owner = %p, want second %p", got, second)
+	}
+	select {
+	case <-first.done:
+		t.Fatal("detached replacement closed displaced client before caller released commit fence")
+	default:
+	}
+	closeDisplaced(result.displaced)
+	select {
+	case <-first.done:
+	case <-time.After(time.Second):
+		t.Fatal("caller could not close displaced client after detached commit")
+	}
+	hub.CloseAll()
+}
+
+func TestClientFullQueueClosesWithoutBlocking(t *testing.T) {
+	client := &Client{UserID: "slow", Send: make(chan []byte, 1)}
+	if !client.EnqueueJSON(Message{Type: MsgOutput, Data: "first"}) {
+		t.Fatal("first enqueue unexpectedly failed")
+	}
+	done := make(chan bool, 1)
+	go func() {
+		done <- client.EnqueueJSON(Message{Type: MsgOutput, Data: "overflow"})
+	}()
+	select {
+	case accepted := <-done:
+		if accepted {
+			t.Fatal("full queue accepted an overflow message")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("full queue blocked lifecycle delivery")
+	}
+	select {
+	case <-client.done:
+	default:
+		t.Fatal("full queue did not close the slow client")
+	}
+}
+
+func TestHubBroadcastDoesNotBlockOnSlowClient(t *testing.T) {
+	client := &Client{UserID: "slow", Send: make(chan []byte, 1)}
+	client.init()
+	client.Send <- []byte("already full")
+	hub := NewHub()
+	hub.mu.Lock()
+	hub.clients[client.UserID] = client
+	hub.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		hub.Broadcast(Message{Type: MsgSessionEnded, Reason: "server_restart"})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("broadcast blocked on a slow client")
+	}
+	select {
+	case <-client.done:
+	default:
+		t.Fatal("broadcast overflow did not isolate the slow client")
 	}
 }
 

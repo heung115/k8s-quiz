@@ -2,8 +2,9 @@ package dbmigrate
 
 import (
 	"errors"
-	"fmt"
 	"io"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -11,9 +12,12 @@ import (
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/golang-migrate/migrate/v4/database/stub"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	controlplanedb "github.com/heung115/k8s-quiz/runnerprotocol/controlplanedb"
 
 	"github.com/k8s-quiz/backend/migrations"
 )
+
+const latestMigrationVersion = 17
 
 // INFRA-4: the embedded FS must contain every migration pair and the
 // migrate source must parse the versions (no DB needed).
@@ -29,6 +33,19 @@ func TestEmbeddedMigrationsParse(t *testing.T) {
 	for _, want := range []string{
 		"001_init.up.sql", "001_init.down.sql",
 		"004_refresh_token_families.up.sql", "004_refresh_token_families.down.sql",
+		"005_add_problem_revision.up.sql", "005_add_problem_revision.down.sql",
+		"006_add_durable_runner_state.up.sql", "006_add_durable_runner_state.down.sql",
+		"007_add_runner_controller_epochs.up.sql", "007_add_runner_controller_epochs.down.sql",
+		"008_add_lifecycle_event_keys.up.sql", "008_add_lifecycle_event_keys.down.sql",
+		"009_guard_running_verify_per_allocation.up.sql", "009_guard_running_verify_per_allocation.down.sql",
+		"010_add_problem_catalog_active.up.sql", "010_add_problem_catalog_active.down.sql",
+		"011_add_problem_catalog_ledger.up.sql", "011_add_problem_catalog_ledger.down.sql",
+		"012_add_problem_artifact_bindings.up.sql", "012_add_problem_artifact_bindings.down.sql",
+		"013_add_durable_end_operation.up.sql", "013_add_durable_end_operation.down.sql",
+		"014_add_runner_controller_proofs.up.sql", "014_add_runner_controller_proofs.down.sql",
+		"015_pin_controller_proof_schema.up.sql", "015_pin_controller_proof_schema.down.sql",
+		"016_recheck_controller_proof_after_lock.up.sql", "016_recheck_controller_proof_after_lock.down.sql",
+		"017_version_controller_proof_consumer.up.sql", "017_version_controller_proof_consumer.down.sql",
 	} {
 		if !names[want] {
 			t.Errorf("embedded migrations missing %s (have %v)", want, names)
@@ -55,12 +72,30 @@ func TestEmbeddedMigrationsParse(t *testing.T) {
 		}
 		v = next
 	}
-	if v != 4 {
-		t.Errorf("expected latest version 4, got %d", v)
+	if v != latestMigrationVersion {
+		t.Errorf("expected latest version %d, got %d", latestMigrationVersion, v)
 	}
 }
 
-// --- dirty-database self-heal (legacy volume recovery) ---
+func TestMigration017ProofConsumerBodyMatchesSharedSecurityContract(t *testing.T) {
+	source, err := migrations.FS.ReadFile("017_version_controller_proof_consumer.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pattern := regexp.MustCompile(`(?s)CREATE FUNCTION public\.consume_runner_controller_proof_v2\(.*?AS \$function\$(.*?)\$function\$;`)
+	match := pattern.FindSubmatch(source)
+	if len(match) != 2 {
+		t.Fatal("migration 017 v2 proof consumer body is absent")
+	}
+	if !controlplanedb.ProofConsumerBodyMatches(string(match[1])) {
+		t.Fatal("migration 017 v2 proof consumer body drifted from the shared security contract")
+	}
+	if strings.Contains(string(source), "CREATE FUNCTION public.consume_runner_controller_proof(") {
+		t.Fatal("migration 017 recreates the legacy proof consumer")
+	}
+}
+
+// --- dirty-database fail-closed behavior ---
 
 func newTestMigrate(t *testing.T, drv database.Driver) *migrate.Migrate {
 	t.Helper()
@@ -75,24 +110,21 @@ func newTestMigrate(t *testing.T, drv database.Driver) *migrate.Migrate {
 	return m
 }
 
-// A legacy volume: full 001–003 schema, bookkeeping stuck dirty at v1.
-// upWithDirtyHeal must force v1 clean and converge to the latest version.
-func TestUpRecoversFromDirtyDatabase(t *testing.T) {
+// A dirty bookkeeping row may represent a partially-applied migration. Startup
+// must not force it clean or run later migrations without operator inspection.
+func TestUpRejectsDirtyDatabaseWithoutForce(t *testing.T) {
 	drv := &stub.Stub{CurrentVersion: 1, IsDirty: true, MigrationSequence: []string{}}
 	m := newTestMigrate(t, drv)
 
-	if err := upWithDirtyHeal(m); err != nil {
-		t.Fatalf("expected dirty recovery to succeed, got %v", err)
+	err := upFailClosed(m)
+	if err == nil || !strings.Contains(err.Error(), "dirty at version 1") {
+		t.Fatalf("dirty database error = %v", err)
 	}
-	if drv.CurrentVersion != 4 {
-		t.Errorf("expected final version 4, got %d", drv.CurrentVersion)
+	if drv.CurrentVersion != 1 || !drv.IsDirty {
+		t.Errorf("startup changed dirty bookkeeping: version=%d dirty=%v", drv.CurrentVersion, drv.IsDirty)
 	}
-	if drv.IsDirty {
-		t.Error("expected database clean after recovery")
-	}
-	// After Force(1), migrations 2–4 were (idempotently) applied.
-	if len(drv.MigrationSequence) != 3 {
-		t.Errorf("expected 3 migrations replayed after force, got %d", len(drv.MigrationSequence))
+	if len(drv.MigrationSequence) != 0 {
+		t.Errorf("startup ran %d migrations after dirty version", len(drv.MigrationSequence))
 	}
 }
 
@@ -101,23 +133,23 @@ func TestUpFreshDatabase(t *testing.T) {
 	drv := &stub.Stub{CurrentVersion: database.NilVersion, MigrationSequence: []string{}}
 	m := newTestMigrate(t, drv)
 
-	if err := upWithDirtyHeal(m); err != nil {
+	if err := upFailClosed(m); err != nil {
 		t.Fatalf("fresh up failed: %v", err)
 	}
-	if drv.CurrentVersion != 4 || drv.IsDirty {
-		t.Errorf("expected clean version 4, got v=%d dirty=%v", drv.CurrentVersion, drv.IsDirty)
+	if drv.CurrentVersion != latestMigrationVersion || drv.IsDirty {
+		t.Errorf("expected clean version %d, got v=%d dirty=%v", latestMigrationVersion, drv.CurrentVersion, drv.IsDirty)
 	}
-	if len(drv.MigrationSequence) != 4 {
-		t.Errorf("expected 4 migrations applied, got %d", len(drv.MigrationSequence))
+	if len(drv.MigrationSequence) != latestMigrationVersion {
+		t.Errorf("expected %d migrations applied, got %d", latestMigrationVersion, len(drv.MigrationSequence))
 	}
 }
 
 // An already-current database is a no-op.
 func TestUpAlreadyCurrent(t *testing.T) {
-	drv := &stub.Stub{CurrentVersion: 4, MigrationSequence: []string{}}
+	drv := &stub.Stub{CurrentVersion: latestMigrationVersion, MigrationSequence: []string{}}
 	m := newTestMigrate(t, drv)
 
-	if err := upWithDirtyHeal(m); err != nil {
+	if err := upFailClosed(m); err != nil {
 		t.Fatalf("no-op up failed: %v", err)
 	}
 	if len(drv.MigrationSequence) != 0 {
@@ -125,20 +157,15 @@ func TestUpAlreadyCurrent(t *testing.T) {
 	}
 }
 
-func TestDirtyVersionExtraction(t *testing.T) {
-	if v, ok := dirtyVersion(migrate.ErrDirty{Version: 3}); !ok || v != 3 {
-		t.Errorf("ErrDirty{3}: got (%d,%v)", v, ok)
+// The configured database must be disposable: Up applies the same embedded
+// migration path used by cmd/server. CI/local validation opts in explicitly.
+func TestEmbeddedMigrationsAgainstConfiguredDatabase(t *testing.T) {
+	databaseURL := os.Getenv("MIGRATION_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("MIGRATION_TEST_DATABASE_URL is not set")
 	}
-	wrapped := fmt.Errorf("failure: %w", migrate.ErrDirty{Version: 1})
-	if v, ok := dirtyVersion(wrapped); !ok || v != 1 {
-		t.Errorf("wrapped ErrDirty{1}: got (%d,%v)", v, ok)
-	}
-	msg := errors.New("Dirty database version 2. Fix and force version.")
-	if v, ok := dirtyVersion(msg); !ok || v != 2 {
-		t.Errorf("message fallback: got (%d,%v)", v, ok)
-	}
-	if _, ok := dirtyVersion(errors.New("some other failure")); ok {
-		t.Error("non-dirty error must not be detected as dirty")
+	if err := Up(databaseURL); err != nil {
+		t.Fatalf("apply embedded migrations: %v", err)
 	}
 }
 
@@ -157,7 +184,7 @@ func TestUpNonDirtyErrorPropagates(t *testing.T) {
 	}
 	m := newTestMigrate(t, drv)
 
-	err := upWithDirtyHeal(m)
+	err := upFailClosed(m)
 	if err == nil {
 		t.Fatal("expected error for non-dirty failure")
 	}

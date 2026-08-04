@@ -42,7 +42,14 @@ func (p *Problem) EffectiveImage() string {
 }
 
 type Problem struct {
-	ID             string    `json:"id"`
+	ID string `json:"id"`
+	// Revision is the content identity of the runtime-relevant problem bundle
+	// (problem.yaml, setup.sh, verify.sh, images.lock, and the provider-resolved
+	// image content ID in runtime mode). It prevents one identity from resolving
+	// to different bytes, but it is not publisher provenance or approval. It is
+	// deliberately not exposed to browser clients.
+	Revision       string    `json:"-"`
+	CatalogActive  bool      `json:"catalog_active,omitempty"`
 	Title          string    `json:"title"`
 	Description    string    `json:"description"`
 	Category       string    `json:"category"`

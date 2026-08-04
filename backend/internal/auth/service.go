@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -67,6 +69,8 @@ type githubUser struct {
 	Email     string `json:"email"`
 	AvatarURL string `json:"avatar_url"`
 }
+
+const maxGithubResponseBytes int64 = 1 << 20
 
 func (s *Service) HandleCallback(ctx context.Context, code string) (accessToken string, refreshToken string, u *models.User, err error) {
 	token, err := s.oauthConf.Exchange(ctx, code)
@@ -186,6 +190,15 @@ func (s *Service) RevokeRefresh(ctx context.Context, refreshToken string) {
 }
 
 func (s *Service) ValidateAccessToken(tokenString string) (*models.User, error) {
+	u, _, err := s.ValidateAccessTokenWithExpiry(tokenString)
+	return u, err
+}
+
+// ValidateAccessTokenWithExpiry returns the same database-refreshed principal
+// as ValidateAccessToken together with the expiry authenticated by the JWT
+// signature. Long-lived transports use the expiry to ensure an already-open
+// connection never outlives its access-token authority.
+func (s *Service) ValidateAccessTokenWithExpiry(tokenString string) (*models.User, time.Time, error) {
 	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, ErrInvalidToken
@@ -193,25 +206,29 @@ func (s *Service) ValidateAccessToken(tokenString string) (*models.User, error) 
 		return []byte(s.cfg.JWTSecret), nil
 	})
 	if err != nil {
-		return nil, ErrInvalidToken
+		return nil, time.Time{}, ErrInvalidToken
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid {
-		return nil, ErrInvalidToken
+		return nil, time.Time{}, ErrInvalidToken
+	}
+	expiresAt, err := claims.GetExpirationTime()
+	if err != nil || expiresAt == nil || !expiresAt.Time.After(time.Now()) {
+		return nil, time.Time{}, ErrInvalidToken
 	}
 
 	userID, ok := claims["sub"].(string)
-	if !ok {
-		return nil, ErrInvalidToken
+	if !ok || userID == "" {
+		return nil, time.Time{}, ErrInvalidToken
 	}
 
 	u, err := s.userRepo.FindByID(context.Background(), userID)
 	if err != nil {
-		return nil, ErrInvalidToken
+		return nil, time.Time{}, ErrInvalidToken
 	}
 
-	return u, nil
+	return u, expiresAt.Time, nil
 }
 
 func (s *Service) generateAccessToken(u *models.User) (string, error) {
@@ -257,35 +274,71 @@ func fetchGithubUser(client *http.Client) (*githubUser, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
 	var ghUser githubUser
-	if err := json.Unmarshal(body, &ghUser); err != nil {
-		return nil, err
+	if err := decodeGithubJSON(resp, &ghUser); err != nil {
+		return nil, fmt.Errorf("decode user response: %w", err)
+	}
+	ghUser.Login = strings.TrimSpace(ghUser.Login)
+	ghUser.Email = strings.TrimSpace(ghUser.Email)
+	if ghUser.ID <= 0 || ghUser.Login == "" {
+		return nil, errors.New("github user response is missing required identity")
 	}
 
 	if ghUser.Email == "" {
 		resp2, err := client.Get("https://api.github.com/user/emails")
-		if err == nil {
-			defer resp2.Body.Close()
-			body2, _ := io.ReadAll(resp2.Body)
-			var emails []struct {
-				Email   string `json:"email"`
-				Primary bool   `json:"primary"`
-			}
-			if json.Unmarshal(body2, &emails) == nil {
-				for _, e := range emails {
-					if e.Primary {
-						ghUser.Email = e.Email
-						break
-					}
+		if err != nil {
+			return nil, fmt.Errorf("fetch email response: %w", err)
+		}
+		defer resp2.Body.Close()
+
+		var emails []struct {
+			Email   string `json:"email"`
+			Primary bool   `json:"primary"`
+		}
+		if err := decodeGithubJSON(resp2, &emails); err != nil {
+			return nil, fmt.Errorf("decode email response: %w", err)
+		}
+		for _, email := range emails {
+			if email.Primary {
+				ghUser.Email = strings.TrimSpace(email.Email)
+				if ghUser.Email == "" {
+					return nil, errors.New("github primary email is empty")
 				}
+				break
 			}
 		}
 	}
 
 	return &ghUser, nil
+}
+
+func decodeGithubJSON(resp *http.Response, target any) error {
+	if resp == nil || resp.Body == nil {
+		return errors.New("github response is missing a body")
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("github returned HTTP status %d", resp.StatusCode)
+	}
+
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || !isJSONMediaType(mediaType) {
+		return errors.New("github response is not JSON")
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGithubResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read github response: %w", err)
+	}
+	if int64(len(body)) > maxGithubResponseBytes {
+		return errors.New("github response exceeds size limit")
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return errors.New("github response contains invalid JSON")
+	}
+	return nil
+}
+
+func isJSONMediaType(mediaType string) bool {
+	return mediaType == "application/json" ||
+		(strings.HasPrefix(mediaType, "application/") && strings.HasSuffix(mediaType, "+json"))
 }
