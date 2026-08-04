@@ -1,0 +1,15 @@
+**
+!go.mod
+!controlplanedb
+controlplanedb/**
+!controlplanedb/contract.go
+!v1
+v1/**
+!v1/client.go
+!v1/errors.go
+!v1/identity.go
+!v1/request_digest.go
+!v1/strictjson.go
+!v1/tls.go
+!v1/types.go
+!v1/validation.go
