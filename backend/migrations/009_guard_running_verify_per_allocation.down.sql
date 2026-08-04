@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS runner_operations_one_running_verify_per_allocation;

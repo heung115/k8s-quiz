@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
 	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
@@ -26,9 +25,21 @@ func Up(databaseURL string) error {
 	return UpFS(migrations.FS, ".", databaseURL)
 }
 
+// UpIsolatedTestSchema installs the provider-neutral domain schema through
+// version 14 in a non-public test schema. Version 15 is deliberately excluded:
+// it pins the deployment authority function to public and is exercised only by
+// dedicated-database strict-role tests.
+func UpIsolatedTestSchema(databaseURL string) error {
+	return migrateTo(migrations.FS, ".", databaseURL, 14)
+}
+
 // UpFS is the testable core of Up: run migrations from any fs.FS whose root
 // (dir) holds the N_name.up.sql / N_name.down.sql files.
 func UpFS(fsys fs.FS, dir, databaseURL string) error {
+	return migrateTo(fsys, dir, databaseURL, 0)
+}
+
+func migrateTo(fsys fs.FS, dir, databaseURL string, target uint) error {
 	src, err := iofs.New(fsys, dir)
 	if err != nil {
 		return fmt.Errorf("migration source: %w", err)
@@ -50,36 +61,30 @@ func UpFS(fsys fs.FS, dir, databaseURL string) error {
 		return fmt.Errorf("migrate init: %w", err)
 	}
 
-	return upWithDirtyHeal(m)
+	if target == 0 {
+		return upFailClosed(m)
+	}
+	if err := m.Migrate(target); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("migrate to version %d: %w", target, err)
+	}
+	return logVersion(m)
 }
 
-// upWithDirtyHeal runs Up and self-heals a dirty schema_migrations row.
-// Legacy volumes were seeded by mounting migrations straight into
-// docker-entrypoint-initdb.d: they have the full 001–003 schema but no
-// bookkeeping, so the first run replayed 001 ("relation already exists") and
-// left schema_migrations dirty. Because every UP migration is idempotent DDL,
-// we can safely force the dirty version clean and retry once — this converges
-// any legacy volume to the latest version.
-func upWithDirtyHeal(m *migrate.Migrate) error {
+// upFailClosed never changes migration bookkeeping after a failed or
+// interrupted migration. Automatically forcing an arbitrary dirty version
+// clean can mark a partially-applied schema complete, especially once a
+// migration spans multiple related Runner tables and constraints. Operators
+// must inspect and repair the exact migration before explicitly forcing it.
+func upFailClosed(m *migrate.Migrate) error {
 	err := m.Up()
 	if err == nil || errors.Is(err, migrate.ErrNoChange) {
 		return logVersion(m)
 	}
-
-	v, ok := dirtyVersion(err)
-	if !ok {
-		return fmt.Errorf("migrate up: %w", err)
+	var dirty migrate.ErrDirty
+	if errors.As(err, &dirty) {
+		return fmt.Errorf("migrate up: database is dirty at version %d; inspect and repair the migration before explicitly forcing a version: %w", dirty.Version, err)
 	}
-
-	log.Printf("WARNING: database marked dirty at version %d (legacy volume seeded before migration bookkeeping existed); forcing version %d clean and retrying with idempotent DDL", v, v)
-	if ferr := m.Force(v); ferr != nil {
-		return fmt.Errorf("migrate up: %w (force version %d failed: %v)", err, v, ferr)
-	}
-
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return fmt.Errorf("migrate up after dirty recovery: %w", err)
-	}
-	return logVersion(m)
+	return fmt.Errorf("migrate up: %w", err)
 }
 
 func logVersion(m *migrate.Migrate) error {
@@ -87,20 +92,4 @@ func logVersion(m *migrate.Migrate) error {
 		log.Printf("database schema at version %d (dirty=%v)", v, dirty)
 	}
 	return nil
-}
-
-// dirtyVersion extracts the schema version from a dirty-database error
-// (migrate.ErrDirty, with a message-parse fallback).
-func dirtyVersion(err error) (int, bool) {
-	var de migrate.ErrDirty
-	if errors.As(err, &de) {
-		return de.Version, true
-	}
-	if msg := err.Error(); strings.Contains(msg, "Dirty database") {
-		var v int
-		if _, serr := fmt.Sscanf(msg, "Dirty database version %d", &v); serr == nil {
-			return v, true
-		}
-	}
-	return 0, false
 }
