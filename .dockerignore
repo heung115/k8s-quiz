@@ -1,0 +1,9 @@
+**
+!backend/
+!backend/**
+!runnerprotocol/
+!runnerprotocol/**
+backend/.env
+backend/data/
+backend/coverage.out
+**/.DS_Store

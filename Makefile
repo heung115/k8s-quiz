@@ -2,10 +2,10 @@
 
 ## Build the k3s-base problem image (required before starting problems)
 image:
-	docker compose --profile image up --build k3s-base
+	RUNNER_SCOPE=$${RUNNER_SCOPE:-k8s-quiz-image-build} docker compose --profile image build k3s-base
 
 ## Start the full stack (never use down -v: pgdata holds dev data)
-up:
+up: image
 	docker compose up --build -d
 
 down:
@@ -26,7 +26,7 @@ lint-problems:
 		sh -n "$$f" || fail=1; \
 		if command -v shellcheck >/dev/null 2>&1; then shellcheck -S warning "$$f" || fail=1; fi; \
 	done; \
-	[ $$fail -eq 0 ] && echo "problem scripts OK"
+	[ $$fail -eq 0 ] && sh hack/validate-image-pins.sh && echo "problem scripts OK"
 
 ## Fetch the public sample-problem submodule after a normal git clone.
 problems-init:
