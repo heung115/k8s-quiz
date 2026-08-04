@@ -42,10 +42,16 @@ export interface Attempt {
 }
 
 export interface Session {
+  request_id?: string
+  operation_id: string
   session_id: string
   problem_id: string
-  status: string
-  timeout_at: string
+  generation: number
+  status: SessionStatus
+  timeout_at: string | null
+  cleanup_pending: boolean
+  terminal_reason: string | null
+  event_sequence: number
 }
 
 export interface Progress {
@@ -66,6 +72,145 @@ export interface WSMessage {
 	log?: string
 	reason?: string
 	remaining_seconds?: number
+	session_id?: string
+	generation?: number
+}
+
+export interface TerminalOutputMessage {
+  type: 'output'
+  data: string
+}
+
+export interface TerminalErrorMessage {
+  type: 'error'
+  message: string
+}
+
+export interface TerminalAttachedMessage {
+  type: 'terminal_attached'
+  session_id: string
+  generation: number
+  attach_nonce: string
+}
+
+export type TerminalServerMessage = TerminalOutputMessage | TerminalErrorMessage | TerminalAttachedMessage
+
+export interface TerminalReadyMessage {
+  type: 'terminal_ready'
+  attach_nonce: string
+}
+
+export interface TerminalInputMessage {
+  type: 'input'
+  attach_nonce: string
+  data: string
+}
+
+export interface TerminalResizeMessage {
+  type: 'resize'
+  attach_nonce: string
+  cols: number
+  rows: number
+}
+
+export type TerminalClientMessage = TerminalReadyMessage | TerminalInputMessage | TerminalResizeMessage
+
+export const WS_CLOSE_CONNECTION_REPLACED = 4001
+
+export const SESSION_STATUSES = [
+  'creating',
+  'queued',
+  'provisioning',
+  'booting',
+  'setting_up',
+  'ready',
+  'verifying',
+  'completed',
+  'failed',
+  'timeout',
+  'timed_out',
+  'provider_lost',
+  'destroying',
+  'destroyed',
+] as const
+
+export type SessionStatus = (typeof SESSION_STATUSES)[number]
+
+export const LIFECYCLE_SCHEMA = 'k8s-quiz.lifecycle/v1' as const
+
+export const LIFECYCLE_STATUSES = [
+  'queued',
+  'provisioning',
+  'booting',
+  'setting_up',
+  'ready',
+  'verifying',
+  'completed',
+  'failed',
+  'timed_out',
+  'provider_lost',
+  'destroying',
+  'destroyed',
+] as const
+
+export type LifecycleStatus = (typeof LIFECYCLE_STATUSES)[number]
+
+export interface LifecycleCursor {
+  session_id: string
+  generation: number
+  event_sequence: number
+}
+
+export interface LifecycleVerifyResult {
+  success: boolean
+  log: string
+}
+
+export interface LifecycleSessionSnapshot {
+  session_id: string
+  problem_id: string
+  generation: number
+  operation_id: string
+  status: LifecycleStatus
+  timeout_at: string | null
+  cleanup_pending: boolean
+  terminal_reason: string | null
+  latest_verify_result?: LifecycleVerifyResult | null
+}
+
+export interface LifecycleSnapshotFrame {
+  type: 'lifecycle_snapshot'
+  schema: typeof LIFECYCLE_SCHEMA
+  session: LifecycleSessionSnapshot | null
+  cursor: LifecycleCursor | null
+}
+
+export interface LifecycleEventFrame {
+  type: 'lifecycle_event'
+  schema: typeof LIFECYCLE_SCHEMA
+  session_id: string
+  generation: number
+  event_sequence: number
+  event_type: string
+  reason_code: string
+  message: string
+  occurred_at: string
+  payload: Record<string, unknown>
+}
+
+export interface LifecycleResyncRequiredFrame {
+  type: 'lifecycle_resync_required'
+  reason: string
+}
+
+export type LifecycleServerMessage =
+  | LifecycleSnapshotFrame
+  | LifecycleEventFrame
+  | LifecycleResyncRequiredFrame
+
+export interface LifecycleSubscribeFrame {
+  type: 'lifecycle_subscribe'
+  cursor: LifecycleCursor
 }
 
 export interface LeaderboardEntry {
