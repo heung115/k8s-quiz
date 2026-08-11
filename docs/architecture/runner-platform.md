@@ -71,8 +71,9 @@ the public acceptance gate for that topology.
 
 ## Runner contract
 
-The authoritative detailed contract is `_workspace/11_runner_contract.md`. The
-current in-process `Runner` interface implements:
+The authoritative public contract is represented by this document and the
+provider-neutral interfaces in `runnerprotocol/`. The current in-process
+`Runner` interface implements:
 
 - `CreateSession`
 - `WaitReady`
@@ -244,7 +245,9 @@ recovery merely because an earlier provider delete was slow.
 
 ## Home Proxmox provider
 
-The detailed provider design is `_workspace/11_runner_home_proxmox.md`.
+Provider-specific Proxmox implementation details remain outside this public
+repository. The public boundary and its security requirements are documented
+in this section and in the conformance tests.
 
 - use KVM VMs, not privileged LXC or session Docker containers
 - use a dedicated Proxmox resource pool, template, storage scope, session network,
@@ -444,8 +447,8 @@ Secrets stay outside both repositories in the runtime secret store.
 
 ## Acceptance gates
 
-Design gates are satisfied by this document and its handoffs. Public runtime gates
-remain closed until live evidence proves:
+The design gates are tracked in this document. Public runtime gates remain
+closed until live evidence proves:
 
 - no Docker socket or session shell on the Control Plane
 - separate-kernel KVM Session VM per active allocation
