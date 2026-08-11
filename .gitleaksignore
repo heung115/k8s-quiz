@@ -1,10 +1,10 @@
 # Synthetic idempotency-key fixtures in unit tests. These findings are
 # intentionally ignored by fingerprint because the values are not credentials.
-35f6f36f20fb39e5ccb82d8d595e102a59049ea1:backend/internal/problem/handler_test.go:generic-api-key:280
-35f6f36f20fb39e5ccb82d8d595e102a59049ea1:backend/internal/problem/handler_test.go:generic-api-key:320
-35f6f36f20fb39e5ccb82d8d595e102a59049ea1:backend/internal/problem/handler_test.go:generic-api-key:334
-35f6f36f20fb39e5ccb82d8d595e102a59049ea1:backend/internal/problem/handler_test.go:generic-api-key:369
-35f6f36f20fb39e5ccb82d8d595e102a59049ea1:backend/internal/problem/handler_test.go:generic-api-key:397
-35f6f36f20fb39e5ccb82d8d595e102a59049ea1:backend/internal/problem/handler_test.go:generic-api-key:656
-35f6f36f20fb39e5ccb82d8d595e102a59049ea1:backend/internal/problem/handler_test.go:generic-api-key:701
-35f6f36f20fb39e5ccb82d8d595e102a59049ea1:backend/internal/runner/verify_contract_test.go:generic-api-key:19
+8c28430009c35f85ce9337e7eba357569cdc3443:backend/internal/problem/handler_test.go:generic-api-key:280
+8c28430009c35f85ce9337e7eba357569cdc3443:backend/internal/problem/handler_test.go:generic-api-key:320
+8c28430009c35f85ce9337e7eba357569cdc3443:backend/internal/problem/handler_test.go:generic-api-key:334
+8c28430009c35f85ce9337e7eba357569cdc3443:backend/internal/problem/handler_test.go:generic-api-key:369
+8c28430009c35f85ce9337e7eba357569cdc3443:backend/internal/problem/handler_test.go:generic-api-key:397
+8c28430009c35f85ce9337e7eba357569cdc3443:backend/internal/problem/handler_test.go:generic-api-key:656
+8c28430009c35f85ce9337e7eba357569cdc3443:backend/internal/problem/handler_test.go:generic-api-key:701
+8c28430009c35f85ce9337e7eba357569cdc3443:backend/internal/runner/verify_contract_test.go:generic-api-key:19
