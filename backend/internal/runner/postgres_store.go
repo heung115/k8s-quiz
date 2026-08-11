@@ -232,6 +232,10 @@ func (s *PostgresStore) ReserveSession(ctx context.Context, params ReserveSessio
 	if err := validateReservation(params); err != nil {
 		return SessionReservation{}, err
 	}
+	// PostgreSQL TIMESTAMPTZ persists microseconds. Canonicalize before hashing
+	// and returning the reservation so exact replays observe the same value as
+	// the durable row instead of differing only in discarded nanoseconds.
+	params.ExpiresAt = params.ExpiresAt.UTC().Truncate(time.Microsecond)
 
 	sessionRef := SessionRef{SessionID: params.SessionID, Generation: initialGeneration}
 	allocationID := AllocationIDForSession(sessionRef)
