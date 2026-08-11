@@ -106,38 +106,9 @@ cd .. && make lint-problems
 
 ## 문제를 추가하려면
 
-공개 예제 문제는 [`k8s-quiz-problems`](https://github.com/heung115/k8s-quiz-problems) 저장소에서 관리하며, 이 저장소에는 `problems/` submodule로 연결됩니다. 문제 ID와 같은 이름의 디렉터리를 만들면 됩니다.
+공개 예제 문제와 문제 작성 규칙은 [`k8s-quiz-problems`](https://github.com/heung115/k8s-quiz-problems) 저장소에서 관리합니다. 문제를 추가하거나 수정할 때는 그 저장소의 README와 CI 검증을 먼저 확인한 뒤, 메인 저장소에서 `make problems-update`로 submodule 포인터를 갱신합니다.
 
-```text
-problems/
-  my-problem/
-    problem.yaml
-    setup.sh
-    verify.sh
-    hint.md
-```
-
-```yaml
-# problem.yaml
-id: my-problem
-title: "문제 제목"
-description: |
-  학습자가 확인할 상황과 목표를 적습니다.
-category: pod           # pod | network | storage | rbac | scheduling | config
-difficulty: easy        # easy | medium | hard
-type: fix               # fix | find | deploy
-timeout_minutes: 30
-verify_type: script     # script | choice | text
-base_image: k3s-base:latest
-```
-
-`setup.sh`는 고장 난 상태를 만들고, `verify.sh`는 해결 여부를 확인합니다. 검증 스크립트는 exit code 0을 성공으로, 1을 실패로 처리합니다. Kubernetes가 수렴하는 시간을 고려해 유한 폴링으로 작성하고, 조건을 확인하는 명령이 실패를 가리지 않도록 fail-closed 방식으로 작성하는 것을 권장합니다.
-
-문제 저장소에서 변경을 병합한 뒤 메인 저장소에서 `make problems-update`로 submodule 포인터를 갱신합니다. 변경된 checkout을 게시하려면 Admin 화면에서 **Sync Problems**를 명시적으로 실행해야 합니다. Sync는 `git pull`을 실행하지 않고, 검증된 전체 카탈로그를 PostgreSQL의 append-only generation ledger에 `head+1`로 게시합니다. 서버 시작은 ledger가 비어 있을 때만 generation 1을 bootstrap합니다. 이미 artifact-bound head가 있으면 checkout을 읽지 않고 PostgreSQL과 로컬 content-addressed store에서 그 generation을 복원하므로 checkout이 삭제되거나 달라져도 자동 게시·롤백하지 않습니다. 참조된 artifact가 없거나 손상됐거나 저장 projection과 다르면 신규 admission을 열지 않습니다.
-
-런타임 로더는 `problem.yaml`, setup/verify 스크립트와 Docker가 확인한 이미지 콘텐츠 ID를 하나의 revision으로 묶습니다. 이미지 태그가 다른 콘텐츠를 가리키면 revision도 바뀌며, 이전 revision으로 새 이미지를 실행하지 않습니다. 신규 세션은 현재 head의 `catalog_generation + problem_id + revision`에 결합되어 예약되므로 게시와 세션 선택의 provenance가 PostgreSQL에 남습니다. 이 revision과 generation은 실행 일관성을 위한 콘텐츠 식별자이며, 서명된 게시자 provenance나 공개 채점의 신뢰성을 보증하지는 않습니다.
-
-관리자 문제 생성·수정·삭제 API는 실행할 수 없는 metadata draft 전용입니다. revision이 있는 실행 문제의 게시·변경·은퇴는 원자적 Sync를 통해서만 가능합니다. 공개 목록과 신규 세션은 현재 catalog head의 문제만 사용합니다. `problems` 테이블의 비활성 행은 attempt 외래키를 보존하는 identity/latest-projection 행일 뿐이지만, 별도의 `problem_catalog_publications`와 `problem_catalog_entries`가 과거 generation의 exact metadata selection을 append-only로 보존합니다. canonical runtime artifact에는 manifest, setup/verifier/hint, `images.lock`, immutable runtime image ID와 전체 problem projection이 들어가며, `problem_artifacts`가 revision을 로컬 filesystem CAS의 exact digest에 불변으로 연결합니다. 이 CAS는 checkout 없는 재시작·과거 revision 복구를 위한 integrity store이지, 서명된 provenance·승인·폐기 정책이나 공개 신뢰 저장소는 아닙니다. 자세한 현재 보장과 남은 공개 게이트는 [ADR 002](docs/architecture/adr/002-problem-artifact-catalog.md)를 참고하세요.
+문제 catalog의 generation·artifact·revision 보장처럼 애플리케이션과 연결된 동작은 [문제 artifact catalog ADR](docs/architecture/adr/002-problem-artifact-catalog.md)에 정리되어 있습니다.
 
 ## 운영 경계
 
