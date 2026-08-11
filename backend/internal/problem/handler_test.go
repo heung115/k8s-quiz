@@ -277,7 +277,7 @@ func TestStartProblem(t *testing.T) {
 	r := setupTestRouter(repo, &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
-	req.Header.Set("Idempotency-Key", "operation-12345678")
+	req.Header.Set("Idempotency-Key", "operation-12345678") //gitleaks:allow synthetic test key
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -317,7 +317,7 @@ func TestStartProblemNoSessionAfterStart(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
-	req.Header.Set("Idempotency-Key", "operation-12345678")
+	req.Header.Set("Idempotency-Key", "operation-12345678") //gitleaks:allow synthetic test key
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -331,7 +331,7 @@ func TestStartProblemError(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/start", nil)
-	req.Header.Set("Idempotency-Key", "operation-12345678")
+	req.Header.Set("Idempotency-Key", "operation-12345678") //gitleaks:allow synthetic test key
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -366,7 +366,7 @@ func TestVerify(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/verify", nil)
-	req.Header.Set("Idempotency-Key", "verify-operation-1")
+	req.Header.Set("Idempotency-Key", "verify-operation-1") //gitleaks:allow synthetic test key
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -394,7 +394,7 @@ func TestVerifyError(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/verify", nil)
-	req.Header.Set("Idempotency-Key", "verify-operation-2")
+	req.Header.Set("Idempotency-Key", "verify-operation-2") //gitleaks:allow synthetic test key
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -653,7 +653,7 @@ func TestStartProblemBusy429(t *testing.T) {
 	sess := &mockSession{startErr: session.ErrTransitionBusy}
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 	req := httptest.NewRequest(http.MethodPost, "/api/problems/p1/start", nil)
-	req.Header.Set("Idempotency-Key", "operation-busy-12345678")
+	req.Header.Set("Idempotency-Key", "operation-busy-12345678") //gitleaks:allow synthetic test key
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusTooManyRequests {
@@ -698,7 +698,7 @@ func TestVerifyTooFast429(t *testing.T) {
 	r := setupTestRouter(newMockRepo(), &mockLoader{}, sess)
 
 	req := httptest.NewRequest("POST", "/api/problems/p1/verify", nil)
-	req.Header.Set("Idempotency-Key", "verify-operation-3")
+	req.Header.Set("Idempotency-Key", "verify-operation-3") //gitleaks:allow synthetic test key
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 

@@ -16,7 +16,7 @@ func validVerifyContractFixture(provider ProviderKind) (VerifyRequest, VerifyRes
 			Provider: provider,
 		},
 		Problem:        ProblemRef{ID: "pod-crashloop", Revision: "sha256:approved-problem-revision"},
-		IdempotencyKey: "verify-operation-1",
+		IdempotencyKey: "verify-operation-1", //gitleaks:allow synthetic test key
 		Deadline:       deadline,
 	}
 	feedback, err := PublicFeedbackForStatus(VerifyFailed)
