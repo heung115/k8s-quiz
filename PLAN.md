@@ -400,7 +400,6 @@ k8s-quiz/
       ci.yaml
   .env.example
   PLAN.md
-  AGENTS.md
 ```
 
 ## Docker Compose
@@ -498,7 +497,6 @@ MAX_CONCURRENT_SESSIONS=0   # local dev may use 0; public mode requires a positi
 - [ ] React + Vite + TS + Tailwind + shadcn/ui setup
 - [ ] Docker Compose (backend, frontend, postgres)
 - [ ] DB migrations (users, problems, attempts, refresh_tokens)
-- [ ] AGENTS.md
 
 ### Phase 2: Auth
 - [ ] GitHub OAuth flow (handler + service)

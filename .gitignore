@@ -27,6 +27,7 @@ AGENTS.md
 .codex/
 _workspace/
 docs/harness/
+docs/infra/
 
 # security audit notes — local only
 SECURITY.md
