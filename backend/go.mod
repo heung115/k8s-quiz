@@ -15,7 +15,7 @@ require (
 	github.com/moby/moby/client v0.5.1
 	golang.org/x/oauth2 v0.25.0
 	golang.org/x/sync v0.21.0
-	golang.org/x/sys v0.45.0
+	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
