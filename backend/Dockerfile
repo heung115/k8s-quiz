@@ -1,5 +1,5 @@
 # Digest-pinned base images (CONFIG-2). Dependabot proposes digest bumps.
-FROM golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 AS builder
+FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS builder
 WORKDIR /src/backend
 COPY runnerprotocol /src/runnerprotocol
 COPY backend/go.mod backend/go.sum ./
